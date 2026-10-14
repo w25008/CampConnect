@@ -74,6 +74,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // Notifications: who follows me, messages sent to me, and what I've already seen (kept per browser).
+  const [followers, setFollowers] = useState(null);
+  const [incoming, setIncoming] = useState([]);
+  const [notifyProfiles, setNotifyProfiles] = useState([]);
+  const [seen, setSeen] = useState(null);
+  const [newFollowerIds, setNewFollowerIds] = useState([]);
   const userId = session?.user?.id;
   const messageRequest = useRef(0);
   const recipientRef = useRef('');
@@ -145,7 +151,38 @@ export default function App() {
     if (requestId !== messageRequest.current || recipient !== recipientRef.current) return;
     if (err) setError(err.message); else { setMessages((data || []).reverse()); setError(''); }
   }, [userId, recipient]);
+  const loadNotifications = useCallback(async () => {
+    if (!userId) return;
+    const [followerResult, inboxResult] = await Promise.all([
+      supabase.from('follows').select('follower_id').eq('following_id', userId),
+      supabase.from('direct_messages').select('sender_id,created_at').eq('recipient_id', userId).order('created_at', { ascending: false }).limit(500),
+    ]);
+    const failed = [followerResult, inboxResult].find(r => r.error);
+    if (failed) { setError(failed.error.message); return; }
+    const followerIds = (followerResult.data || []).map(f => f.follower_id);
+    const inbox = inboxResult.data || [];
+    setFollowers(followerIds); setIncoming(inbox);
+    const peopleIds = [...new Set([...followerIds, ...inbox.map(m => m.sender_id)])];
+    if (peopleIds.length) {
+      const { data, error: err } = await supabase.from('profiles').select('id,handle,display_name,created_at').in('id', peopleIds);
+      if (!err) setNotifyProfiles(data || []);
+    }
+  }, [userId]);
   useEffect(() => { if (userId) loadCommunity(true); else { setProfiles([]); setPosts([]); setMessages([]); } }, [userId, loadCommunity]);
+  useEffect(() => {
+    setFollowers(null); setIncoming([]); setNotifyProfiles([]); setNewFollowerIds([]);
+    if (!userId) { setSeen(null); return; }
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(`campconnect_seen_${userId}`)); } catch { stored = null; }
+    // First visit on this browser: start counting from now so old activity doesn't flood the badges.
+    setSeen(stored?.since ? stored : { since: new Date().toISOString(), followers: null, senders: {} });
+    loadNotifications();
+  }, [userId, loadNotifications]);
+  useEffect(() => {
+    if (!userId || !seen) return;
+    try { localStorage.setItem(`campconnect_seen_${userId}`, JSON.stringify(seen)); } catch { /* storage unavailable */ }
+  }, [userId, seen]);
+  useEffect(() => { if (seen && followers && seen.followers === null) setSeen(s => ({ ...s, followers })); }, [seen, followers]);
   useEffect(() => { recipientRef.current = recipient; messageRequest.current += 1; setMessages([]); }, [recipient, userId]);
   useEffect(() => { if (tab === 'messages') loadMessages(); }, [tab, loadMessages]);
   useEffect(() => {
@@ -169,14 +206,42 @@ export default function App() {
   }, [userId, tab, query]);
   useEffect(() => {
     if (!userId) return undefined;
-    const timer = setInterval(() => { if (document.visibilityState === 'visible') { if (tab === 'messages') loadMessages(); } }, 15000);
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') { loadNotifications(); if (tab === 'messages') loadMessages(); } }, 15000);
     return () => clearInterval(timer);
-  }, [userId, tab, loadMessages]);
-  const profileMap = useMemo(() => new Map([...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].map(p => [p.id, p])), [profiles, searchResults, selectedProfile]);
+  }, [userId, tab, loadMessages, loadNotifications]);
+  const unreadBySender = useMemo(() => {
+    const counts = {};
+    if (!seen) return counts;
+    for (const m of incoming) {
+      if (Date.parse(m.created_at) > Date.parse(seen.senders[m.sender_id] || seen.since)) counts[m.sender_id] = (counts[m.sender_id] || 0) + 1;
+    }
+    return counts;
+  }, [incoming, seen]);
+  const unreadMessages = Object.values(unreadBySender).reduce((a, b) => a + b, 0);
+  const unseenFollowers = useMemo(() => (followers && seen?.followers ? followers.filter(id => !seen.followers.includes(id)) : []), [followers, seen]);
+  // Opening People marks new followers as seen, but keeps their "New follower" tag until you leave the tab.
+  useEffect(() => {
+    if (tab !== 'people') { setNewFollowerIds([]); return; }
+    if (!unseenFollowers.length) return;
+    setNewFollowerIds(prev => [...new Set([...prev, ...unseenFollowers])]);
+    setSeen(s => ({ ...s, followers: [...new Set([...(s.followers || []), ...unseenFollowers])] }));
+  }, [tab, unseenFollowers]);
+  // Viewing a conversation marks that person's messages as read.
+  useEffect(() => {
+    if (tab !== 'messages' || !recipient || !unreadBySender[recipient]) return;
+    const latest = incoming.find(m => m.sender_id === recipient)?.created_at;
+    if (latest) setSeen(s => ({ ...s, senders: { ...s.senders, [recipient]: latest } }));
+  }, [tab, recipient, unreadBySender, incoming]);
+  const profileMap = useMemo(() => new Map([...notifyProfiles, ...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].map(p => [p.id, p])), [notifyProfiles, profiles, searchResults, selectedProfile]);
   const mine = profileMap.get(userId);
   const followingIds = new Set(follows.map(f => f.following_id));
-  const others = [...new Map([...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()];
-  const filtered = query.trim() ? searchResults.filter(p => p.id !== userId) : others;
+  const followerIds = new Set(followers || []);
+  const others = [...new Map([...notifyProfiles, ...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()];
+  const filtered = (query.trim() ? searchResults.filter(p => p.id !== userId) : others)
+    .sort((a, b) => newFollowerIds.includes(b.id) - newFollowerIds.includes(a.id));
+  const contacts = [...others].sort((a, b) => (unreadBySender[b.id] || 0) - (unreadBySender[a.id] || 0));
+  const badges = { people: unseenFollowers.length, messages: unreadMessages };
+  const badgeText = n => (n > 99 ? '99+' : n);
   async function mutate(key, operation, after) {
     setBusy(key); setError('');
     try {
@@ -222,11 +287,11 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark"><Sparkles size={20}/></span> CampConnect</div>
-      <nav aria-label="Main navigation">{[['feed', Home, 'Home'], ['people', Users, 'People'], ['messages', Mail, 'Messages']].map(([id, Icon, label]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{label}</button>)}</nav>
+      <nav aria-label="Main navigation">{[['feed', Home, 'Home'], ['people', Users, 'People'], ['messages', Mail, 'Messages']].map(([id, Icon, label]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{label}{badges[id] > 0 && <span className="badge" aria-label={`${badges[id]} new`}>{badgeText(badges[id])}</span>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || 'loading'}</small></div></div><button className="icon-button" aria-label="Sign out" title="Sign out" onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">Your community</p><h1>{tab === 'feed' ? 'Home' : tab === 'people' ? 'People' : 'Messages'}</h1></div><button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => { loadCommunity(true); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
+      <header className="main-header"><div><p className="eyebrow">Your community</p><h1>{tab === 'feed' ? 'Home' : tab === 'people' ? 'People' : 'Messages'}</h1></div><button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">x</button></div>}
       {tab === 'feed' && <>
         <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">Share a thought</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder="What's happening?" rows={3}/><div className="composer-footer"><small>{postText.length}/{MAX_POST}</small><button className="primary" disabled={busy !== '' || !postText.trim()}><Send size={16}/> Post</button></div></form>
@@ -245,8 +310,8 @@ export default function App() {
           </article>;
         })}
       </>}
-      {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search people by name or handle" aria-label="Search people"/></label><div className="section-heading"><h2>Members</h2><span>{searching ? 'Searching?' : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? 'No members match your search.' : 'No other members yet.'}</div>}{filtered.map(p => <div className="member panel" key={p.id}><Avatar profile={p}/><div className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small></div><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => mutate('follow', () => followingIds.has(p.id) ? supabase.from('follows').delete().eq('follower_id', userId).eq('following_id', p.id) : supabase.from('follows').insert({ follower_id: userId, following_id: p.id }))}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? 'Following' : 'Follow'}</button><button className="secondary" onClick={() => { messageRequest.current += 1; setMessages([]); setSelectedProfile(p); setRecipient(p.id); setTab('messages'); }}><Mail size={16}/> Message</button></div></div>)}</div>}
-      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>New conversation</h2><p className="muted">Choose a member to send a private message.</p>{others.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span></button>)}{others.length === 0 && <p className="muted">No other members yet.</p>}</div><section className="conversation panel" aria-label="Conversation">{recipient ? <><div className="conversation-header"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong><button className="icon-button" aria-label="Refresh messages" onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">No messages yet. Say hello.</div>}{messages.map(m => <div key={m.id} className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{m.body}</p><small>{stamp(m.created_at)}</small></div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label="Write a message" placeholder="Write a message..." maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label="Send message"><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>Select someone to start a conversation.</p></div>}</section></div>}
+      {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search people by name or handle" aria-label="Search people"/></label><div className="section-heading"><h2>Members</h2><span>{searching ? 'Searching?' : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? 'No members match your search.' : 'No other members yet.'}</div>}{filtered.map(p => <div className="member panel" key={p.id}><Avatar profile={p}/><div className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">New follower</span> : followerIds.has(p.id) && <span className="tag">Follows you</span>}</div><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => mutate('follow', () => followingIds.has(p.id) ? supabase.from('follows').delete().eq('follower_id', userId).eq('following_id', p.id) : supabase.from('follows').insert({ follower_id: userId, following_id: p.id }))}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? 'Following' : 'Follow'}</button><button className="secondary" onClick={() => { messageRequest.current += 1; setMessages([]); setSelectedProfile(p); setRecipient(p.id); setTab('messages'); }}><Mail size={16}/> Message</button></div></div>)}</div>}
+      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>New conversation</h2><p className="muted">Choose a member to send a private message.</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={`${unreadBySender[p.id]} unread`}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">No other members yet.</p>}</div><section className="conversation panel" aria-label="Conversation">{recipient ? <><div className="conversation-header"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong><button className="icon-button" aria-label="Refresh messages" onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">No messages yet. Say hello.</div>}{messages.map(m => <div key={m.id} className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{m.body}</p><small>{stamp(m.created_at)}</small></div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label="Write a message" placeholder="Write a message..." maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label="Send message"><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>Select someone to start a conversation.</p></div>}</section></div>}
     </main>
   </div>;
 }

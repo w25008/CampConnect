@@ -6,3 +6,4 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 .text-button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 
+.badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:#ec4899;color:#fff;font-size:.7rem;font-weight:800;line-height:20px;text-align:center;flex:none}.nav-link .badge{margin-left:6px}.tag{display:inline-block;margin-top:6px;padding:2px 8px;border-radius:999px;background:#1b2540;border:1px solid #394769;color:#c7d0e6;font-size:.68rem;font-weight:700}.tag.new{background:#ec489926;border-color:#ec4899;color:#fbcfe8}
