@@ -1,7 +1,7 @@
 # Live Demo
 https://w25008.github.io/CampConnect/
 
- # Pulse SNS
+ # CampConnect
 
 A small social network with real accounts, SQL-backed posts, follows, comments, and private one-to-one messages. The frontend is React/Vite. Supabase provides Postgres and email/password authentication.
 
