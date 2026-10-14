@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
 
 const MAX_POST = 500;
 const MAX_COMMENT = 300;
 const MAX_MESSAGE = 1000;
 const stamp = value => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const snip = (text, max = 70) => (text.length > max ? `${text.slice(0, max).trimEnd()}...` : text);
 const display = profile => profile?.display_name || profile?.handle || 'Member';
 function Avatar({ profile }) { return <span className="avatar" aria-hidden="true">{display(profile).slice(0, 1).toUpperCase()}</span>; }
 
@@ -80,6 +81,8 @@ export default function App() {
   const [notifyProfiles, setNotifyProfiles] = useState([]);
   const [seen, setSeen] = useState(null);
   const [newFollowerIds, setNewFollowerIds] = useState([]);
+  const [activity, setActivity] = useState({ likes: [], comments: [], posts: [] });
+  const [freshNotifs, setFreshNotifs] = useState([]);
   const userId = session?.user?.id;
   const messageRequest = useRef(0);
   const recipientRef = useRef('');
@@ -153,16 +156,31 @@ export default function App() {
   }, [userId, recipient]);
   const loadNotifications = useCallback(async () => {
     if (!userId) return;
-    const [followerResult, inboxResult] = await Promise.all([
+    const [followerResult, inboxResult, likeResult, commentResult, postResult] = await Promise.all([
       supabase.from('follows').select('follower_id').eq('following_id', userId),
       supabase.from('direct_messages').select('sender_id,created_at').eq('recipient_id', userId).order('created_at', { ascending: false }).limit(500),
+      // Likes and comments on my posts (the !inner join keeps only rows whose post I wrote).
+      supabase.from('likes').select('post_id,user_id,posts!inner(author_id,body)').eq('posts.author_id', userId).neq('user_id', userId).limit(500),
+      supabase.from('comments').select('id,post_id,author_id,body,created_at,posts!inner(author_id)').eq('posts.author_id', userId).neq('author_id', userId).order('created_at', { ascending: false }).limit(100),
+      supabase.from('posts').select('id,author_id,body,created_at').neq('author_id', userId).order('created_at', { ascending: false }).limit(50),
     ]);
-    const failed = [followerResult, inboxResult].find(r => r.error);
+    const failed = [followerResult, inboxResult, likeResult, commentResult, postResult].find(r => r.error);
     if (failed) { setError(failed.error.message); return; }
     const followerIds = (followerResult.data || []).map(f => f.follower_id);
     const inbox = inboxResult.data || [];
+    const likeRows = likeResult.data || [];
     setFollowers(followerIds); setIncoming(inbox);
-    const peopleIds = [...new Set([...followerIds, ...inbox.map(m => m.sender_id)])];
+    setActivity({ likes: likeRows, comments: commentResult.data || [], posts: postResult.data || [] });
+    // Likes and follows have no timestamp in the database, so remember when this browser first saw each one.
+    const untimedKeys = [...likeRows.map(l => `like:${l.post_id}:${l.user_id}`), ...followerIds.map(id => `follow:${id}`)];
+    setSeen(s => {
+      if (!s) return s;
+      const known = s.firstSeen;
+      if (known && untimedKeys.length === Object.keys(known).length && untimedKeys.every(k => k in known)) return s;
+      const now = new Date().toISOString();
+      return { ...s, firstSeen: Object.fromEntries(untimedKeys.map(k => [k, k in (known || {}) ? known[k] : (known ? now : null)])) };
+    });
+    const peopleIds = [...new Set([...followerIds, ...inbox.map(m => m.sender_id), ...likeRows.map(l => l.user_id), ...(commentResult.data || []).map(c => c.author_id), ...(postResult.data || []).map(p => p.author_id)])];
     if (peopleIds.length) {
       const { data, error: err } = await supabase.from('profiles').select('id,handle,display_name,created_at').in('id', peopleIds);
       if (!err) setNotifyProfiles(data || []);
@@ -170,7 +188,7 @@ export default function App() {
   }, [userId]);
   useEffect(() => { if (userId) loadCommunity(true); else { setProfiles([]); setPosts([]); setMessages([]); } }, [userId, loadCommunity]);
   useEffect(() => {
-    setFollowers(null); setIncoming([]); setNotifyProfiles([]); setNewFollowerIds([]);
+    setFollowers(null); setIncoming([]); setNotifyProfiles([]); setNewFollowerIds([]); setActivity({ likes: [], comments: [], posts: [] }); setFreshNotifs([]);
     if (!userId) { setSeen(null); return; }
     let stored = null;
     try { stored = JSON.parse(localStorage.getItem(`campconnect_seen_${userId}`)); } catch { stored = null; }
@@ -232,6 +250,29 @@ export default function App() {
     const latest = incoming.find(m => m.sender_id === recipient)?.created_at;
     if (latest) setSeen(s => ({ ...s, senders: { ...s.senders, [recipient]: latest } }));
   }, [tab, recipient, unreadBySender, incoming]);
+  const notifications = useMemo(() => {
+    if (!seen) return [];
+    const readAt = Date.parse(seen.notifAt || seen.since);
+    const isNew = at => !!at && Date.parse(at) > readAt;
+    const list = [
+      ...activity.likes.map(l => { const key = `like:${l.post_id}:${l.user_id}`; const at = seen.firstSeen?.[key]; return { key, kind: 'like', actor: l.user_id, postId: l.post_id, text: l.posts?.body, at, unread: isNew(at) }; }),
+      ...activity.comments.map(c => ({ key: `comment:${c.id}`, kind: 'comment', actor: c.author_id, postId: c.post_id, text: c.body, at: c.created_at, unread: isNew(c.created_at) })),
+      ...activity.posts.map(p => ({ key: `post:${p.id}`, kind: 'post', actor: p.author_id, postId: p.id, text: p.body, at: p.created_at, unread: isNew(p.created_at) })),
+      ...(followers || []).map(id => { const key = `follow:${id}`; return { key, kind: 'follow', actor: id, at: seen.firstSeen?.[key], unread: !!seen.followers && !seen.followers.includes(id) }; }),
+    ];
+    return list.sort((a, b) => (b.at ? Date.parse(b.at) : 0) - (a.at ? Date.parse(a.at) : 0)).slice(0, 80);
+  }, [activity, followers, seen]);
+  const unreadNotifications = notifications.filter(n => n.unread).length;
+  // Opening Notifications marks everything as read, but keeps the highlight until you leave the tab.
+  useEffect(() => {
+    if (tab !== 'notifications') { setFreshNotifs([]); return; }
+    const unread = notifications.filter(n => n.unread);
+    if (!unread.length) return;
+    setFreshNotifs(prev => [...new Set([...prev, ...unread.map(n => n.key)])]);
+    // Use the newest item time if it's ahead of this computer's clock, so nothing stays stuck as unread.
+    const newest = Math.max(Date.now(), ...unread.map(n => Date.parse(n.at) || 0));
+    setSeen(s => ({ ...s, notifAt: new Date(newest).toISOString(), followers: [...new Set([...(s.followers || []), ...(followers || [])])] }));
+  }, [tab, notifications, followers]);
   const profileMap = useMemo(() => new Map([...notifyProfiles, ...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].map(p => [p.id, p])), [notifyProfiles, profiles, searchResults, selectedProfile]);
   const mine = profileMap.get(userId);
   const followingIds = new Set(follows.map(f => f.following_id));
@@ -240,7 +281,7 @@ export default function App() {
   const filtered = (query.trim() ? searchResults.filter(p => p.id !== userId) : others)
     .sort((a, b) => newFollowerIds.includes(b.id) - newFollowerIds.includes(a.id));
   const contacts = [...others].sort((a, b) => (unreadBySender[b.id] || 0) - (unreadBySender[a.id] || 0));
-  const badges = { people: unseenFollowers.length, messages: unreadMessages };
+  const badges = { notifications: unreadNotifications, people: unseenFollowers.length, messages: unreadMessages };
   const badgeText = n => (n > 99 ? '99+' : n);
   async function mutate(key, operation, after) {
     setBusy(key); setError('');
@@ -281,17 +322,24 @@ export default function App() {
     } catch (err) { setError(err.message || 'Message could not be sent.'); }
     finally { setBusy(''); }
   }
+  async function openNotification(n) {
+    if (n.kind === 'follow') { setTab('people'); return; }
+    setTab('feed');
+    if (n.kind === 'comment') { setOpenComments(prev => ({ ...prev, [n.postId]: true })); loadComments(n.postId); }
+    await loadCommunity();
+    requestAnimationFrame(() => document.getElementById(`post-${n.postId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+  }
   if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>Connect your database</h1><p className="muted">Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in your deployment environment, then redeploy.</p></div></div>;
   if (checking) return <div className="center-state">Loading CampConnect...</div>;
   if (!session) return <><Auth notify={setNotice}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark"><Sparkles size={20}/></span> CampConnect</div>
-      <nav aria-label="Main navigation">{[['feed', Home, 'Home'], ['people', Users, 'People'], ['messages', Mail, 'Messages']].map(([id, Icon, label]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{label}{badges[id] > 0 && <span className="badge" aria-label={`${badges[id]} new`}>{badgeText(badges[id])}</span>}</button>)}</nav>
+      <nav aria-label="Main navigation">{[['feed', Home, 'Home'], ['notifications', Bell, 'Notifications'], ['people', Users, 'People'], ['messages', Mail, 'Messages']].map(([id, Icon, label]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{label}{badges[id] > 0 && <span className="badge" aria-label={`${badges[id]} new`}>{badgeText(badges[id])}</span>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || 'loading'}</small></div></div><button className="icon-button" aria-label="Sign out" title="Sign out" onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">Your community</p><h1>{tab === 'feed' ? 'Home' : tab === 'people' ? 'People' : 'Messages'}</h1></div><button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
+      <header className="main-header"><div><p className="eyebrow">Your community</p><h1>{{ feed: 'Home', notifications: 'Notifications', people: 'People', messages: 'Messages' }[tab]}</h1></div><button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">x</button></div>}
       {tab === 'feed' && <>
         <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">Share a thought</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder="What's happening?" rows={3}/><div className="composer-footer"><small>{postText.length}/{MAX_POST}</small><button className="primary" disabled={busy !== '' || !postText.trim()}><Send size={16}/> Post</button></div></form>
@@ -302,7 +350,7 @@ export default function App() {
           const count = counts.find(c => c.post_id === post.id);
           const liked = likes.some(l => l.post_id === post.id);
           const postComments = commentsByPost[post.id] || [];
-          return <article className="post panel" key={post.id}>
+          return <article className="post panel" key={post.id} id={`post-${post.id}`}>
             <div className="post-top"><Avatar profile={author}/><div className="post-author"><strong>{display(author)}</strong><small>@{author?.handle || 'member'} - {stamp(post.created_at)}</small></div>{post.author_id === userId && <button className="icon-button danger" title="Delete post" aria-label="Delete post" disabled={busy !== ''} onClick={() => { if (window.confirm('Delete this post?')) mutate('delete', () => supabase.from('posts').delete().eq('id', post.id)); }}><Trash2 size={17}/></button>}</div>
             <p className="post-body">{post.body}</p>
             <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? 'Unlike post' : 'Like post'} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button></div>
@@ -310,6 +358,20 @@ export default function App() {
           </article>;
         })}
       </>}
+      {tab === 'notifications' && <div className="notif-list">
+        {notifications.length === 0 && <div className="empty panel">No notifications yet. Likes, comments, new posts, and followers will show up here.</div>}
+        {notifications.map(n => {
+          const actor = profileMap.get(n.actor);
+          const KindIcon = { like: Heart, comment: MessageCircle, post: Sparkles, follow: UserPlus }[n.kind];
+          return <button key={n.key} className={`notif panel ${n.unread || freshNotifs.includes(n.key) ? 'unread' : ''}`} onClick={() => openNotification(n)}>
+            <span className="notif-avatar"><Avatar profile={actor}/><span className={`notif-kind kind-${n.kind}`}><KindIcon size={11}/></span></span>
+            <span className="notif-body">
+              <span><strong>{display(actor)}</strong> {{ like: 'liked your post', comment: 'commented on your post', post: 'shared a new post', follow: 'started following you' }[n.kind]}{n.text && <>: <q>{snip(n.text)}</q></>}</span>
+              {n.at && <small>{stamp(n.at)}</small>}
+            </span>
+          </button>;
+        })}
+      </div>}
       {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search people by name or handle" aria-label="Search people"/></label><div className="section-heading"><h2>Members</h2><span>{searching ? 'Searching?' : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? 'No members match your search.' : 'No other members yet.'}</div>}{filtered.map(p => <div className="member panel" key={p.id}><Avatar profile={p}/><div className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">New follower</span> : followerIds.has(p.id) && <span className="tag">Follows you</span>}</div><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => mutate('follow', () => followingIds.has(p.id) ? supabase.from('follows').delete().eq('follower_id', userId).eq('following_id', p.id) : supabase.from('follows').insert({ follower_id: userId, following_id: p.id }))}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? 'Following' : 'Follow'}</button><button className="secondary" onClick={() => { messageRequest.current += 1; setMessages([]); setSelectedProfile(p); setRecipient(p.id); setTab('messages'); }}><Mail size={16}/> Message</button></div></div>)}</div>}
       {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>New conversation</h2><p className="muted">Choose a member to send a private message.</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={`${unreadBySender[p.id]} unread`}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">No other members yet.</p>}</div><section className="conversation panel" aria-label="Conversation">{recipient ? <><div className="conversation-header"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong><button className="icon-button" aria-label="Refresh messages" onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">No messages yet. Say hello.</div>}{messages.map(m => <div key={m.id} className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{m.body}</p><small>{stamp(m.created_at)}</small></div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label="Write a message" placeholder="Write a message..." maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label="Send message"><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>Select someone to start a conversation.</p></div>}</section></div>}
     </main>
