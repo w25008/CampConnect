@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
@@ -153,6 +153,9 @@ export default function App() {
   const [editingPost, setEditingPost] = useState(null); // { id, body, keep, added, original }
   const [confirmBox, setConfirmBox] = useState(null); // { message, confirmLabel, onConfirm }
   const [lightbox, setLightbox] = useState(null); // { paths, index }
+  const [focusPost, setFocusPost] = useState({ id: '', post: null, loading: false }); // single-post page
+  const [shareTarget, setShareTarget] = useState(null); // post being sent to someone in a message
+  const [shareQuery, setShareQuery] = useState('');
   // Our own confirm dialog: the browser's confirm() is blocked in some browsers.
   const askConfirm = (message, confirmLabel, onConfirm) => setConfirmBox({ message, confirmLabel, onConfirm });
   useEffect(() => {
@@ -270,11 +273,17 @@ export default function App() {
     if (!userId || !recipient) { setMessages([]); return; }
     const requestId = ++messageRequest.current;
     const { data, error: err } = await supabase.from('direct_messages')
-      .select('id,sender_id,recipient_id,body,created_at')
+      .select('*')
       .or(`and(sender_id.eq.${userId},recipient_id.eq.${recipient}),and(sender_id.eq.${recipient},recipient_id.eq.${userId})`)
       .order('created_at', { ascending: false }).limit(200);
     if (requestId !== messageRequest.current || recipient !== recipientRef.current) return;
-    if (err) setError(err.message); else { setMessages((data || []).reverse()); setError(''); }
+    if (err) { setError(err.message); return; }
+    setMessages((data || []).reverse()); setError('');
+    // I'm looking at this conversation, so tell the sender I've seen their messages.
+    // (read_at is undefined until 0007_message_seen.sql has been run; then this is skipped.)
+    if (document.visibilityState === 'visible' && (data || []).some(m => m.sender_id === recipient && m.read_at === null)) {
+      await supabase.rpc('mark_messages_read', { other_user: recipient });
+    }
   }, [userId, recipient]);
   const loadProfile = useCallback(async id => {
     if (!userId || !id) return;
@@ -445,6 +454,7 @@ export default function App() {
       if (after) after();
       await loadCommunity();
       if (tab === 'profile' && viewProfileId) await loadProfile(viewProfileId);
+      if (tab === 'post' && focusPost.id) await loadFocusPost(focusPost.id);
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
   }
@@ -491,7 +501,7 @@ export default function App() {
     const result = await supabase.from('posts').delete().eq('id', post.id);
     if (!result.error) await removeImages(POST_IMAGE_BUCKET, postImagePaths(post));
     return result;
-  });
+  }, () => { if (tab === 'post') setTab('feed'); });
   function startEditPost(post) {
     setMenuPost('');
     setEditingPost({ id: post.id, body: post.body || '', keep: postImagePaths(post), added: [], original: postImagePaths(post) });
@@ -516,6 +526,7 @@ export default function App() {
       dropPreviews(added); setEditingPost(null);
       await loadCommunity();
       if (tab === 'profile' && viewProfileId) await loadProfile(viewProfileId);
+      if (tab === 'post') await loadFocusPost(id);
     } catch (err) {
       await removeImages(POST_IMAGE_BUCKET, newPaths);
       setError(editErrorText(err));
@@ -574,12 +585,77 @@ export default function App() {
     } catch (err) { setError(err.message || t('errMessage')); }
     finally { setBusy(''); }
   }
-  async function openNotification(n) {
-    if (n.kind === 'follow') { setTab('people'); return; }
-    setTab('feed');
+  function openNotification(n) {
+    if (n.kind === 'follow') { openProfile(n.actor); return; }
     if (n.kind === 'comment') { setOpenComments(prev => ({ ...prev, [n.postId]: true })); loadComments(n.postId); }
-    await loadCommunity();
-    requestAnimationFrame(() => document.getElementById(`post-${n.postId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    openPost(n.postId);
+  }
+  // Sharing: every post has its own link, e.g. https://…/CampConnect/?post=<id>
+  const postLink = id => `${window.location.origin}${window.location.pathname}?post=${id}`;
+  const postIdFromLink = url => {
+    try {
+      const u = new URL(url);
+      return u.origin === window.location.origin && u.pathname === window.location.pathname ? u.searchParams.get('post') : null;
+    } catch { return null; }
+  };
+  async function copyPostLink(post) {
+    setMenuPost('');
+    const link = postLink(post.id);
+    try { await navigator.clipboard.writeText(link); }
+    catch {
+      // Older or locked-down browsers: fall back to a hidden text box.
+      const box = Object.assign(document.createElement('textarea'), { value: link });
+      document.body.append(box); box.select(); document.execCommand('copy'); box.remove();
+    }
+    setFlash(t('linkCopied'));
+  }
+  async function nativeShare(post) {
+    setMenuPost('');
+    try { await navigator.share({ title: 'CampConnect', text: post.body ? snip(post.body, 100) : t('sharedPostIntro'), url: postLink(post.id) }); }
+    catch { /* the person closed the share sheet */ }
+  }
+  async function sendShare(person) {
+    const post = shareTarget;
+    setShareTarget(null); setShareQuery('');
+    const { error: err } = await supabase.from('direct_messages').insert({ sender_id: userId, recipient_id: person.id, body: `${t('sharedPostIntro')}\n${postLink(post.id)}` });
+    if (err) setError(err.message); else setFlash(t('sharedWith', { name: display(person) }));
+  }
+  const loadFocusPost = useCallback(async id => {
+    const { data, error: err } = await supabase.from('posts').select('*').eq('id', id).maybeSingle();
+    if (err) { setError(err.message); setFocusPost({ id, post: null, loading: false }); return; }
+    if (data) {
+      const [authorResult, countResult, likeResult] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', data.author_id).maybeSingle(),
+        supabase.from('post_counts').select('post_id,like_count,comment_count').eq('post_id', id),
+        supabase.from('likes').select('post_id,user_id').eq('user_id', userId).eq('post_id', id),
+      ]);
+      if (authorResult.data) setProfiles(prev => mergeRows(prev, [authorResult.data], 'id'));
+      if (!countResult.error) setCounts(prev => mergeRows(prev, countResult.data || [], 'post_id'));
+      if (!likeResult.error) setLikes(prev => [...prev.filter(l => l.post_id !== id), ...(likeResult.data || [])]);
+    }
+    setFocusPost({ id, post: data, loading: false });
+  }, [userId]);
+  function openPost(id) {
+    setFocusPost(prev => (prev.id === id ? prev : { id, post: null, loading: true }));
+    setTab('post'); window.scrollTo({ top: 0 });
+    loadFocusPost(id);
+  }
+  // Opening a shared link (…?post=<id>) shows that post once signed in.
+  useEffect(() => {
+    if (!userId) return;
+    const id = new URLSearchParams(window.location.search).get('post');
+    if (!id) return;
+    window.history.replaceState(null, '', window.location.pathname);
+    openPost(id);
+  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Message text with clickable links; links to a CampConnect post open it here.
+  function renderMessageBody(body) {
+    return body.split(/(https?:\/\/[^\s]+)/g).map((part, i) => {
+      if (i % 2 === 0) return part;
+      const sharedId = postIdFromLink(part);
+      if (sharedId) return <button key={i} type="button" className="shared-post-link" onClick={() => openPost(sharedId)}><Share2 size={14}/> {t('viewSharedPost')}</button>;
+      return <a key={i} href={part} target="_blank" rel="noopener noreferrer">{part}</a>;
+    });
   }
   function openProfile(id) {
     if (!id) return;
@@ -653,7 +729,15 @@ export default function App() {
         {post.body && <p className="post-body">{post.body}</p>}
         {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
       </>}
-      <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button></div>
+      <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button>
+        <div className="share-wrap"><button aria-label={t('share')} title={t('share')} aria-haspopup="menu" aria-expanded={menuPost === `share:${post.id}`} onClick={e => { e.stopPropagation(); setMenuPost(menuPost === `share:${post.id}` ? '' : `share:${post.id}`); }}><Share2 size={18}/> {t('share')}</button>
+          {menuPost === `share:${post.id}` && <div className="menu panel share-menu" role="menu">
+            <button role="menuitem" onClick={() => copyPostLink(post)}><Link size={16}/> {t('copyLink')}</button>
+            <button role="menuitem" onClick={() => { setMenuPost(''); setShareTarget(post); }}><Send size={16}/> {t('sendInMessage')}</button>
+            {typeof navigator.share === 'function' && <button role="menuitem" onClick={() => nativeShare(post)}><Share2 size={16}/> {t('shareVia')}</button>}
+          </div>}
+        </div>
+      </div>
       {openComments[post.id] && <div className="comments"><h3>{t('comments')}</h3>{loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}{postComments.map(c => <div className="comment" key={c.id}><PersonLink {...linkProps(c.author_id)}><Avatar profile={profileMap.get(c.author_id)}/></PersonLink><div><PersonLink {...linkProps(c.author_id)}><strong>{display(profileMap.get(c.author_id))}</strong></PersonLink><small> - {when(c.created_at)}</small><p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label={t('sendComment')}><Send size={16}/></button></form></div>}
     </article>;
   }
@@ -713,8 +797,14 @@ export default function App() {
       {profileView.posts.map(renderPost)}
     </div>;
   }
-  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), messages: t('navMessages'), profile: t('navProfile') };
+  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), messages: t('navMessages'), profile: t('navProfile'), post: t('postTitle') };
   const viewingOther = tab === 'profile' && viewProfileId && viewProfileId !== userId;
+  // "Sent" / "Seen" is shown under my most recent message only, like most chat apps.
+  const lastMineIndex = messages.map(m => m.sender_id === userId).lastIndexOf(true);
+  const shareCandidates = others.filter(p => {
+    const q = shareQuery.trim().toLowerCase();
+    return !q || display(p).toLowerCase().includes(q) || p.handle?.toLowerCase().includes(q);
+  });
   if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>{t('connectDbTitle')}</h1><p className="muted">{t('connectDbBody')}</p></div></div>;
   if (checking) return <div className="center-state">{t('loadingApp')}</div>;
   if (!session) return <><Auth notify={setNotice} t={t} lang={lang} onChangeLang={changeLang} theme={theme} onToggleTheme={toggleTheme}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
@@ -752,10 +842,25 @@ export default function App() {
         })}
       </div>}
       {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder={t('searchPeople')} aria-label={t('searchPeople')}/></label><div className="section-heading"><h2>{t('members')}</h2><span>{searching ? t('searching') : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? t('noMatch') : t('noMembers')}</div>}{filtered.map(p => <div className="member panel" key={p.id}><PersonLink {...linkProps(p.id)} className="member-person"><Avatar profile={p}/><span className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">{t('newFollower')}</span> : followerIds.has(p.id) && <span className="tag">{t('followsYou')}</span>}</span></PersonLink><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => toggleFollow(p.id)}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? t('following') : t('follow')}</button><button className="secondary" onClick={() => openConversation(p)}><Mail size={16}/> {t('message')}</button></div></div>)}</div>}
-      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong></PersonLink><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map(m => <div key={m.id} className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{m.body}</p><small>{when(m.created_at)}</small></div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>}
+      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong></PersonLink><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{renderMessageBody(m.body)}</p><small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>}
       {tab === 'profile' && renderProfile()}
+      {tab === 'post' && <div className="single-post">
+        <button type="button" className="back-button" onClick={() => setTab('feed')}><ArrowLeft size={17}/> {t('backHome')}</button>
+        {focusPost.loading && !focusPost.post ? <div className="empty panel">{t('loading')}</div> : focusPost.post ? renderPost(focusPost.post) : <div className="empty panel">{t('postNotFound')}</div>}
+      </div>}
     </main>
     {flash && <div className="toast" role="status">{flash}</div>}
+    {shareTarget && <div className="modal-backdrop" onClick={() => { setShareTarget(null); setShareQuery(''); }}>
+      <div className="modal panel share-modal" role="dialog" aria-modal="true" aria-label={t('sendInMessage')} onClick={e => e.stopPropagation()}>
+        <h2>{t('sendInMessage')}</h2>
+        <label className="search-box"><Search size={17}/><input autoFocus value={shareQuery} onChange={e => setShareQuery(e.target.value)} placeholder={t('searchPeople')} aria-label={t('searchPeople')}/></label>
+        <div className="share-list">
+          {shareCandidates.length === 0 && <p className="muted">{t('noMatch')}</p>}
+          {shareCandidates.map(p => <button key={p.id} type="button" className="contact" onClick={() => sendShare(p)}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span><Send size={16} className="share-send"/></button>)}
+        </div>
+        <div className="form-actions-inline"><button className="secondary" onClick={() => { setShareTarget(null); setShareQuery(''); }}>{t('cancel')}</button></div>
+      </div>
+    </div>}
     {confirmBox && <ConfirmDialog message={confirmBox.message} confirmLabel={confirmBox.confirmLabel} cancelLabel={t('cancel')} onCancel={() => setConfirmBox(null)} onConfirm={() => { const run = confirmBox.onConfirm; setConfirmBox(null); run(); }}/>}
     {lightbox && <Lightbox t={t} urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))} index={lightbox.index} onIndex={index => setLightbox(prev => ({ ...prev, index }))} onClose={() => setLightbox(null)}/>}
   </div>;
