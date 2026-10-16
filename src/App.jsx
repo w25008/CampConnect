@@ -37,8 +37,8 @@ function Auth({ notify }) {
   }
   return <div className="auth-wrap"><div className="auth-card">
     <div className="brand">CampConnect</div>
-    <p className="eyebrow">A small space to connect</p><h1>{signup ? 'Create your account' : 'Welcome back'}</h1>
-    <p className="muted">{signup ? 'Share thoughts and start conversations.' : 'Sign in to see your community.'}</p>
+    <h1>{signup ? 'Create your account' : 'GaigoとITCollege学生だけ向けのウェブサイト'}</h1>
+    {signup && <p className="muted">Share thoughts and start conversations.</p>}
     <form className="stack-form" onSubmit={submit}>
       {signup && <><label>Display name<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label><label>Username<input required minLength={3} maxLength={34} autoComplete="username" value={handle} onChange={e => setHandle(e.target.value.toLowerCase())} placeholder="your_username" /></label><p className="muted">Shown publicly as @username. Use lowercase letters, numbers, or underscores; start with a letter.</p></>}
       <label>Email<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
