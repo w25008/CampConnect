@@ -1,16 +1,7 @@
 // Notification sounds, generated with the Web Audio API (no sound files needed).
 // Browsers only allow audio after the person has clicked or typed on the page,
 // so the audio engine is started on the first interaction (see unlockAudio).
-const STORAGE_KEY = 'campconnect_sound';
 let ctx = null;
-
-export function initialSoundOn() {
-  try { return localStorage.getItem(STORAGE_KEY) !== 'off'; } catch { return true; }
-}
-
-export function saveSoundOn(on) {
-  try { localStorage.setItem(STORAGE_KEY, on ? 'on' : 'off'); } catch { /* storage unavailable */ }
-}
 
 export function unlockAudio() {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -33,7 +24,8 @@ function tone(freq, start, duration, volume) {
   osc.stop(start + duration + 0.05);
 }
 
-// 'message': a bright two-note "ding-ding". 'post': a single, softer "pop".
+// 'message': a bright two-note "ding-ding".
+// 'activity' (new post, like, comment, follower): a single, softer "pop".
 export function playSound(kind) {
   if (!ctx || ctx.state !== 'running') return;
   const now = ctx.currentTime;
