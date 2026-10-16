@@ -1,6 +1,9 @@
--- Apply after 0001_initial.sql. Existing rows are preserved. Run with the
+-- Apply after 0001_initial.sql through 0007_message_seen.sql. Existing rows
+-- are preserved. Run with the
 -- Supabase migration role; security-definer helpers must not be owned by a
 -- browser-facing role. Email confirmation must remain enabled in Auth.
+-- Not safe to re-run; the transaction leaves nothing half-applied on failure.
+begin;
 
 -- A signed-in account is not a school member until its school inbox is
 -- confirmed. The database checks the Auth record, not editable profile data.
@@ -36,7 +39,13 @@ alter table public.posts
     check (audience in ('school', 'selected', 'group')),
   add column group_id uuid references public.student_groups(id) on delete cascade,
   add constraint posts_audience_group_check
-    check ((audience = 'group') = (group_id is not null));
+    check ((audience = 'group') = (group_id is not null)),
+  -- The post-images bucket from 0005 is PUBLIC. A restricted post must never
+  -- reference that bucket, including through the legacy single-image column.
+  -- This also applies to UPDATEs allowed by 0006_post_editing.sql.
+  add constraint posts_restricted_no_public_images check (
+    audience = 'school' or (image_path is null and cardinality(image_paths) = 0)
+  );
 create index posts_group_created_idx on public.posts(group_id, created_at desc)
   where audience = 'group';
 
@@ -176,18 +185,31 @@ grant execute on function public.remove_student_group_member(uuid,uuid) to authe
 -- One transaction creates the post and its exact selected audience. The
 -- author is always able to see their own post. Client inserts are revoked.
 create or replace function public.create_audience_post(
-  p_body text, p_audience text, p_user_ids uuid[] default null, p_group_id uuid default null
+  p_body text, p_audience text, p_user_ids uuid[] default null,
+  p_group_id uuid default null, p_image_paths text[] default '{}'
 ) returns uuid language plpgsql security definer set search_path = '' as $$
-declare v_id uuid; v_count integer;
+declare v_id uuid; v_count integer; v_body text := coalesce(btrim(p_body), '');
+        v_image_paths text[] := coalesce(p_image_paths, '{}');
 begin
   if not public.is_verified_student(auth.uid()) then
     raise exception 'Verified school account required';
   end if;
-  if p_body is null or char_length(btrim(p_body)) not between 1 and 500 then
-    raise exception 'Post must contain 1 to 500 characters';
+  if char_length(v_body) > 500 or
+     (v_body = '' and cardinality(v_image_paths) = 0) then
+    raise exception 'Post needs text or an image, with at most 500 text characters';
+  end if;
+  if cardinality(v_image_paths) > 4 or exists (
+    select 1 from unnest(v_image_paths) as image_entry(path)
+    where image_entry.path is null or char_length(image_entry.path) > 300
+      or image_entry.path not like auth.uid()::text || '/%'
+  ) then
+    raise exception 'Choose up to four images uploaded to your own folder';
   end if;
   if p_audience not in ('school', 'selected', 'group') then
     raise exception 'Invalid post audience';
+  end if;
+  if p_audience <> 'school' and cardinality(v_image_paths) > 0 then
+    raise exception 'Selected and group posts must be text-only';
   end if;
   if p_audience = 'school' and (p_group_id is not null or p_user_ids is not null) then
     raise exception 'School posts cannot have recipients or a group';
@@ -210,8 +232,8 @@ begin
       raise exception 'Recipients must be other verified students';
     end if;
   end if;
-  insert into public.posts(author_id, body, audience, group_id)
-    values (auth.uid(), btrim(p_body), p_audience, p_group_id)
+  insert into public.posts(author_id, body, audience, group_id, image_paths)
+    values (auth.uid(), v_body, p_audience, p_group_id, v_image_paths)
     returning id into v_id;
   if p_audience = 'selected' then
     insert into public.post_recipients(post_id, user_id)
@@ -221,8 +243,8 @@ begin
   return v_id;
 end;
 $$;
-revoke all on function public.create_audience_post(text,text,uuid[],uuid) from public, anon;
-grant execute on function public.create_audience_post(text,text,uuid[],uuid) to authenticated;
+revoke all on function public.create_audience_post(text,text,uuid[],uuid,text[]) from public, anon;
+grant execute on function public.create_audience_post(text,text,uuid[],uuid,text[]) to authenticated;
 
 -- Replace permissive policies from 0001. Related rows are visible only when
 -- their parent post remains visible. The security-invoker count view inherits
@@ -243,6 +265,12 @@ drop policy posts_delete_self on public.posts;
 create policy posts_delete_self on public.posts for delete to authenticated
   using (author_id = (select auth.uid()) and
     public.can_view_post(id, author_id, audience, group_id, created_at, (select auth.uid())));
+-- 0006 let authors edit by authorship alone; also require they can still see it.
+drop policy if exists posts_update_self on public.posts;
+create policy posts_update_self on public.posts for update to authenticated
+  using (author_id = (select auth.uid()) and
+    public.can_view_post(id, author_id, audience, group_id, created_at, (select auth.uid())))
+  with check (author_id = (select auth.uid()));
 drop policy likes_read on public.likes;
 create policy likes_read on public.likes for select to authenticated
   using (public.can_view_post_id(post_id, (select auth.uid())));
@@ -449,3 +477,5 @@ create policy direct_messages_insert_sender on public.direct_messages
     and public.is_verified_student(recipient_id)
     and not public.is_blocked_pair(sender_id, recipient_id)
   );
+
+commit;

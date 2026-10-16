@@ -1,27 +1,28 @@
-# Live Demo
-https://w25008.github.io/CampConnect/
+# CampConnect
 
- # CampConnect
+Live sites: [GitHub Pages](https://w25008.github.io/CampConnect/) and [Vercel](https://pulse-sns-nine.vercel.app/).
 
 A school-only social app for OSFL students. React/Vite provides the frontend; Supabase provides Postgres and email/password authentication.
 
-## Repository features
+## Features in the current source
 
 - Sign up with a confirmed `@osfl.ac.jp` address, sign in, and sign out
 - Publish school-wide, selected-student, or group posts; like and comment only when allowed to see the post
 - Create groups and manage members; new members cannot see earlier posts, and removed members lose access in the app
-- Find members and follow or unfollow them
+- Find members, edit profiles, follow people, and receive notifications
+- Share images on school-wide posts, switch between English and Japanese, and choose light or dark mode
 - Set up a browser chat key, save a recovery code, and exchange encrypted one-to-one messages
 - Block another student from sending new messages
+- Report a post or comment (spam, harassment, inappropriate, other); reports are stored in the `reports` table, readable only from the Supabase dashboard
+- Group owners can rename a group and set its photo; year of study is limited to 1 to 3
 
-The new database migration must be applied before these features work. Existing plaintext chats remain marked as legacy. There are no image uploads, push notifications, group chat, or student report workflow yet. School report delivery awaits a designated reviewer and address.
+The audience, group, and encrypted-chat features require the latest migration and frontend deployment. Existing plaintext chats remain marked as legacy. There is no group chat yet. Reports are collected but nobody is notified: a designated reviewer must check the `reports` table (Supabase dashboard > Table Editor) regularly, and school report delivery awaits a reviewer and address. Student profiles cannot be reported yet. Images are limited to school-wide posts because the current image bucket is public.
 
 ## Set up the database
 
-1. Create a Supabase project on the Free plan.
-2. In Supabase **SQL Editor**, run [0001_initial.sql](./supabase/migrations/0001_initial.sql), then [0002_school_audiences_and_encrypted_chat.sql](./supabase/migrations/0002_school_audiences_and_encrypted_chat.sql). Apply `0002` once to an existing `0001` database; it preserves current rows.
-3. In **Authentication → Providers**, keep Email and **Confirm Email** enabled. The school gate checks the confirmed address in `auth.users` on every protected database operation. Configure a sender that can deliver confirmation links to `@osfl.ac.jp`, then test delivery to school inboxes. The default sender may only reach project team members.
-4. In **Authentication → URL Configuration**, set the Site URL to your deployed URL and add `http://localhost:5173/**` and the production URL to Redirect URLs.
+1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. The existing CampConnect project is already at `0012`. For a project still at `0007`, run `0008` through `0012` in order, each once ([0008](./supabase/migrations/0008_school_audiences_and_encrypted_chat.sql) is the big one). Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
+2. In **Authentication > Sign In / Providers**, keep Email and **Confirm email** enabled. The new school gate checks the confirmed address in `auth.users`. Custom SMTP is configured on the current project; test delivery to a school inbox before inviting more students.
+3. In **Authentication > URL Configuration**, set the Site URL to the public app URL and include production and local URLs in Redirect URLs. The current project uses `https://pulse-sns-nine.vercel.app/` as its Site URL.
 
 ## Run locally
 
@@ -49,13 +50,12 @@ Open the URL Vite prints. Run `npm run build` before deployment. Never put a Sup
 
 ## Deploy for free
 
-1. Publish this folder in a Git repository, then import that repository into Vercel on its Hobby plan. If this folder is inside a larger repository, set the project root directory to `pulse-sns`.
-2. Use the Vite defaults: build command `npm run build`, output directory `dist`.
-3. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` as project environment variables.
-4. Deploy, then update Supabase Authentication URL Configuration with the production URL.
-5. Before inviting students, use at least three confirmed school test accounts. Verify that an unconfirmed or external address cannot read community data, a nonmember cannot fetch a group or selected post or its comments by direct API request, and a removed member loses group access. Set up chat keys for two accounts; confirm new rows contain ciphertext only, both participants can decrypt, and a third account cannot fetch the row. Restore one chat key in a fresh browser with its recovery code. Test on mobile after scrolling.
+1. Apply all migrations through `0012` to the database before deploying the new frontend. New code calls its functions and columns.
+2. Build with `npm run build`. GitHub Pages is published by the [workflow](./.github/workflows/deploy-pages.yml) when `main` is pushed; a separate Vercel project also hosts the app. Check both deploy paths before release.
+3. Verify the live app with at least three confirmed school accounts. An unconfirmed or external address must not read community data; nonmembers must not fetch selected/group posts, comments, likes, or counts through direct API calls. New group members must not see old posts, and removed members must lose future database access.
+4. Set up chat keys for two accounts. Confirm only ciphertext is stored for new DMs, both participants decrypt, a third account cannot fetch the row, and a fresh browser restores with the recovery code. Test a key reset and legacy plaintext labeling. Test desktop and scrolled mobile screens.
 
-The publishable key is designed for client use; never place a secret key in browser code. Free plans have usage limits, and Vercel Hobby is for personal, non-commercial use. Apply `0002` before deploying the new frontend, since it calls new database functions and columns.
+The publishable key is designed for client use; never place a secret key in browser code. Free plans have usage limits, and Vercel Hobby is for personal, non-commercial use.
 
 ## Private chat security boundary
 
