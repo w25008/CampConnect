@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
+import { translate, initialLang, saveLang } from './i18n.js';
 
 const MAX_POST = 500;
 const MAX_COMMENT = 300;
@@ -8,12 +9,13 @@ const MAX_MESSAGE = 1000;
 // Only school accounts may join. The database enforces this too (supabase/migrations/0002_restrict_email_domain.sql).
 const SCHOOL_DOMAIN = 'osfl.ac.jp';
 const isSchoolEmail = value => value.trim().toLowerCase().endsWith(`@${SCHOOL_DOMAIN}`);
-const stamp = value => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const stamp = (value, lang) => new Date(value).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' });
 const snip = (text, max = 70) => (text.length > max ? `${text.slice(0, max).trimEnd()}...` : text);
 const display = profile => profile?.display_name || profile?.handle || 'Member';
 function Avatar({ profile }) { return <span className="avatar" aria-hidden="true">{display(profile).slice(0, 1).toUpperCase()}</span>; }
+function LangToggle({ t, onToggle }) { return <button type="button" className="lang-toggle" onClick={onToggle} aria-label={t('switchLabel')} title={t('switchLabel')}>{t('switchTo')}</button>; }
 
-function Auth({ notify }) {
+function Auth({ notify, t, onToggleLang }) {
   const [signup, setSignup] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,9 +26,9 @@ function Auth({ notify }) {
   async function submit(e) {
     e.preventDefault(); setError('');
     const h = handle.trim().toLowerCase();
-    if (!isSchoolEmail(email)) { setError(`Please use your school email address (e.g. w25009@${SCHOOL_DOMAIN}).`); return; }
+    if (!isSchoolEmail(email)) { setError(t('errSchoolEmail', { example: `w25009@${SCHOOL_DOMAIN}` })); return; }
     if (signup && (!/^[a-z][a-z0-9_]{2,33}$/.test(h) || !name.trim())) {
-      setError('Enter a display name and a username of 3 to 34 lowercase letters, numbers, or underscores. The username must start with a letter.'); return;
+      setError(t('errSignupFields')); return;
     }
     setBusy(true);
     try {
@@ -35,22 +37,29 @@ function Auth({ notify }) {
         ? await supabase.auth.signUp({ email: email.trim(), password, options: { data: { display_name: name.trim(), handle: h } } })
         : await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (result.error) throw result.error;
-      if (signup && !result.data.session) notify('Account created. Check your email to confirm it, then sign in. If your username was taken, we assigned a unique one.');
-    } catch (err) { setError(err.message || 'Could not continue.'); }
+      // With email confirmation on, Supabase returns a fake success (a user with no identities) for an email that's already registered.
+      if (signup && result.data.user?.identities?.length === 0) {
+        setError(t('errEmailExists')); setSignup(false); return;
+      }
+      if (signup && !result.data.session) notify(t('signupDone'));
+    } catch (err) {
+      if (signup && /already registered/i.test(err.message || '')) { setError(t('errEmailExists')); setSignup(false); }
+      else setError(err.message || t('errContinue'));
+    }
     finally { setBusy(false); }
   }
   return <div className="auth-wrap"><div className="auth-card">
-    <div className="brand">CampConnect</div>
-    <h1>{signup ? 'Create your account' : 'GaigoとITCollege学生だけ向けのウェブサイト'}</h1>
-    {signup && <p className="muted">Share thoughts and start conversations.</p>}
+    <div className="auth-top"><div className="brand">CampConnect</div><LangToggle t={t} onToggle={onToggleLang}/></div>
+    <h1>{signup ? t('createAccountTitle') : t('tagline')}</h1>
+    {signup && <p className="muted">{t('signupSubtitle')}</p>}
     <form className="stack-form" onSubmit={submit}>
-      {signup && <><label>Display name<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label><label>Username<input required minLength={3} maxLength={34} autoComplete="username" value={handle} onChange={e => setHandle(e.target.value.toLowerCase())} placeholder="your_username" /></label><p className="muted">Shown publicly as @username. Use lowercase letters, numbers, or underscores; start with a letter.</p></>}
-      <label>School email<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={`w25000@${SCHOOL_DOMAIN}`} /></label>
-      <label>Password<input required type="password" minLength={6} autoComplete={signup ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)} /></label>
+      {signup && <><label>{t('displayName')}<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label><label>{t('username')}<input required minLength={3} maxLength={34} autoComplete="username" value={handle} onChange={e => setHandle(e.target.value.toLowerCase())} placeholder="your_username" /></label><p className="muted">{t('usernameHint')}</p></>}
+      <label>{t('schoolEmail')}<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={`w25000@${SCHOOL_DOMAIN}`} /></label>
+      <label>{t('password')}<input required type="password" minLength={6} autoComplete={signup ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)} /></label>
       {error && <p className="error-text" role="alert">{error}</p>}
-      <button className="primary" disabled={busy}>{busy ? 'Please wait...' : signup ? 'Create account' : 'Sign in'}</button>
+      <button className="primary" disabled={busy}>{busy ? t('pleaseWait') : signup ? t('createAccount') : t('signIn')}</button>
     </form>
-    <button className="text-button" onClick={() => { setSignup(!signup); setError(''); }}>{signup ? 'Already have an account? Sign in' : 'New here? Create an account'}</button>
+    <button className="text-button" onClick={() => { setSignup(!signup); setError(''); }}>{signup ? t('haveAccount') : t('newHere')}</button>
   </div></div>;
 }
 
@@ -87,6 +96,13 @@ export default function App() {
   const [newFollowerIds, setNewFollowerIds] = useState([]);
   const [activity, setActivity] = useState({ likes: [], comments: [], posts: [] });
   const [freshNotifs, setFreshNotifs] = useState([]);
+  const [lang, setLang] = useState(initialLang);
+  const t = (key, vars) => translate(lang, key, vars);
+  const when = value => stamp(value, lang);
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const toggleLang = () => setLang(prev => { const next = prev === 'en' ? 'ja' : 'en'; saveLang(next); return next; });
+  useEffect(() => { document.documentElement.lang = lang; }, [lang]);
   const userId = session?.user?.id;
   const messageRequest = useRef(0);
   const recipientRef = useRef('');
@@ -126,7 +142,7 @@ export default function App() {
       setProfiles([...byId.values()]); setPosts(postRows);
       setCounts(countResult.data || []); setLikes(likeResult.data || []);
       setFollows(followResult.data || []); setError('');
-    } catch (err) { setError(err.message || 'Could not load the community.'); }
+    } catch (err) { setError(err.message || translate(langRef.current, 'errLoadCommunity')); }
     finally { if (spin) setLoading(false); }
   }, [userId]);
   const loadComments = useCallback(async postId => {
@@ -294,7 +310,7 @@ export default function App() {
       if (result.error) throw result.error;
       if (after) after();
       await loadCommunity();
-    } catch (err) { setError(err.message || 'Action failed. Please try again.'); }
+    } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
   }
   function publish(e) {
@@ -323,7 +339,7 @@ export default function App() {
       const { error: err } = await supabase.from('direct_messages').insert({ sender_id: userId, recipient_id: recipient, body });
       if (err) throw err;
       setMessageText(''); await loadMessages();
-    } catch (err) { setError(err.message || 'Message could not be sent.'); }
+    } catch (err) { setError(err.message || t('errMessage')); }
     finally { setBusy(''); }
   }
   async function openNotification(n) {
@@ -333,51 +349,52 @@ export default function App() {
     await loadCommunity();
     requestAnimationFrame(() => document.getElementById(`post-${n.postId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
   }
-  if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>Connect your database</h1><p className="muted">Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in your deployment environment, then redeploy.</p></div></div>;
-  if (checking) return <div className="center-state">Loading CampConnect...</div>;
-  if (!session) return <><Auth notify={setNotice}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
+  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), messages: t('navMessages') };
+  if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>{t('connectDbTitle')}</h1><p className="muted">{t('connectDbBody')}</p></div></div>;
+  if (checking) return <div className="center-state">{t('loadingApp')}</div>;
+  if (!session) return <><Auth notify={setNotice} t={t} onToggleLang={toggleLang}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand">CampConnect</div>
-      <nav aria-label="Main navigation">{[['feed', Home, 'Home'], ['notifications', Bell, 'Notifications'], ['people', Users, 'People'], ['messages', Mail, 'Messages']].map(([id, Icon, label]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{label}{badges[id] > 0 && <span className="badge" aria-label={`${badges[id]} new`}>{badgeText(badges[id])}</span>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || 'loading'}</small></div></div><button className="icon-button" aria-label="Sign out" title="Sign out" onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div>
+      <nav aria-label={t('mainNav')}>{[['feed', Home], ['notifications', Bell], ['people', Users], ['messages', Mail]].map(([id, Icon]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>)}</nav>
+      <div className="sidebar-bottom"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></div><LangToggle t={t} onToggle={toggleLang}/><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">Your community</p><h1>{{ feed: 'Home', notifications: 'Notifications', people: 'People', messages: 'Messages' }[tab]}</h1></div><button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
-      {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">x</button></div>}
+      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{navTitles[tab]}</h1></div><button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
+      {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>
-        <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">Share a thought</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder="What's happening?" rows={3}/><div className="composer-footer"><small>{postText.length}/{MAX_POST}</small><button className="primary" disabled={busy !== '' || !postText.trim()}><Send size={16}/> Post</button></div></form>
-        <div className="section-heading"><h2>Latest posts</h2>{loading && <span>Loading...</span>}</div>
-        {!loading && posts.length === 0 && <div className="empty panel">No posts yet. Write the first one above.</div>}
+        <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/><div className="composer-footer"><small>{postText.length}/{MAX_POST}</small><button className="primary" disabled={busy !== '' || !postText.trim()}><Send size={16}/> {t('post')}</button></div></form>
+        <div className="section-heading"><h2>{t('latestPosts')}</h2>{loading && <span>{t('loading')}</span>}</div>
+        {!loading && posts.length === 0 && <div className="empty panel">{t('noPosts')}</div>}
         {posts.map(post => {
           const author = profileMap.get(post.author_id);
           const count = counts.find(c => c.post_id === post.id);
           const liked = likes.some(l => l.post_id === post.id);
           const postComments = commentsByPost[post.id] || [];
           return <article className="post panel" key={post.id} id={`post-${post.id}`}>
-            <div className="post-top"><Avatar profile={author}/><div className="post-author"><strong>{display(author)}</strong><small>@{author?.handle || 'member'} - {stamp(post.created_at)}</small></div>{post.author_id === userId && <button className="icon-button danger" title="Delete post" aria-label="Delete post" disabled={busy !== ''} onClick={() => { if (window.confirm('Delete this post?')) mutate('delete', () => supabase.from('posts').delete().eq('id', post.id)); }}><Trash2 size={17}/></button>}</div>
+            <div className="post-top"><Avatar profile={author}/><div className="post-author"><strong>{display(author)}</strong><small>@{author?.handle || 'member'} - {when(post.created_at)}</small></div>{post.author_id === userId && <button className="icon-button danger" title={t('deletePost')} aria-label={t('deletePost')} disabled={busy !== ''} onClick={() => { if (window.confirm(t('confirmDelete'))) mutate('delete', () => supabase.from('posts').delete().eq('id', post.id)); }}><Trash2 size={17}/></button>}</div>
             <p className="post-body">{post.body}</p>
-            <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? 'Unlike post' : 'Like post'} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button></div>
-            {openComments[post.id] && <div className="comments"><h3>Comments</h3>{loadingComments[post.id] && <p className="muted">Loading comments?</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">No comments yet.</p>}{postComments.map(c => <div className="comment" key={c.id}><Avatar profile={profileMap.get(c.author_id)}/><div><strong>{display(profileMap.get(c.author_id))}</strong><small> - {stamp(c.created_at)}</small><p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label="Write a comment" maxLength={MAX_COMMENT} placeholder="Write a comment..." value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label="Send comment"><Send size={16}/></button></form></div>}
+            <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button></div>
+            {openComments[post.id] && <div className="comments"><h3>{t('comments')}</h3>{loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}{postComments.map(c => <div className="comment" key={c.id}><Avatar profile={profileMap.get(c.author_id)}/><div><strong>{display(profileMap.get(c.author_id))}</strong><small> - {when(c.created_at)}</small><p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label={t('sendComment')}><Send size={16}/></button></form></div>}
           </article>;
         })}
       </>}
       {tab === 'notifications' && <div className="notif-list">
-        {notifications.length === 0 && <div className="empty panel">No notifications yet. Likes, comments, new posts, and followers will show up here.</div>}
+        {notifications.length === 0 && <div className="empty panel">{t('noNotifications')}</div>}
         {notifications.map(n => {
           const actor = profileMap.get(n.actor);
           const KindIcon = { like: Heart, comment: MessageCircle, post: Sparkles, follow: UserPlus }[n.kind];
           return <button key={n.key} className={`notif panel ${n.unread || freshNotifs.includes(n.key) ? 'unread' : ''}`} onClick={() => openNotification(n)}>
             <span className="notif-avatar"><Avatar profile={actor}/><span className={`notif-kind kind-${n.kind}`}><KindIcon size={11}/></span></span>
             <span className="notif-body">
-              <span><strong>{display(actor)}</strong> {{ like: 'liked your post', comment: 'commented on your post', post: 'shared a new post', follow: 'started following you' }[n.kind]}{n.text && <>: <q>{snip(n.text)}</q></>}</span>
-              {n.at && <small>{stamp(n.at)}</small>}
+              <span><strong>{display(actor)}</strong>{t({ like: 'notifLike', comment: 'notifComment', post: 'notifPost', follow: 'notifFollow' }[n.kind])}{n.text && <>{t('quoteSep')}<q>{snip(n.text)}</q></>}</span>
+              {n.at && <small>{when(n.at)}</small>}
             </span>
           </button>;
         })}
       </div>}
-      {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search people by name or handle" aria-label="Search people"/></label><div className="section-heading"><h2>Members</h2><span>{searching ? 'Searching?' : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? 'No members match your search.' : 'No other members yet.'}</div>}{filtered.map(p => <div className="member panel" key={p.id}><Avatar profile={p}/><div className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">New follower</span> : followerIds.has(p.id) && <span className="tag">Follows you</span>}</div><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => mutate('follow', () => followingIds.has(p.id) ? supabase.from('follows').delete().eq('follower_id', userId).eq('following_id', p.id) : supabase.from('follows').insert({ follower_id: userId, following_id: p.id }))}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? 'Following' : 'Follow'}</button><button className="secondary" onClick={() => { messageRequest.current += 1; setMessages([]); setSelectedProfile(p); setRecipient(p.id); setTab('messages'); }}><Mail size={16}/> Message</button></div></div>)}</div>}
-      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>New conversation</h2><p className="muted">Choose a member to send a private message.</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={`${unreadBySender[p.id]} unread`}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">No other members yet.</p>}</div><section className="conversation panel" aria-label="Conversation">{recipient ? <><div className="conversation-header"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong><button className="icon-button" aria-label="Refresh messages" onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">No messages yet. Say hello.</div>}{messages.map(m => <div key={m.id} className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{m.body}</p><small>{stamp(m.created_at)}</small></div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label="Write a message" placeholder="Write a message..." maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label="Send message"><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>Select someone to start a conversation.</p></div>}</section></div>}
+      {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder={t('searchPeople')} aria-label={t('searchPeople')}/></label><div className="section-heading"><h2>{t('members')}</h2><span>{searching ? t('searching') : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? t('noMatch') : t('noMembers')}</div>}{filtered.map(p => <div className="member panel" key={p.id}><Avatar profile={p}/><div className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">{t('newFollower')}</span> : followerIds.has(p.id) && <span className="tag">{t('followsYou')}</span>}</div><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => mutate('follow', () => followingIds.has(p.id) ? supabase.from('follows').delete().eq('follower_id', userId).eq('following_id', p.id) : supabase.from('follows').insert({ follower_id: userId, following_id: p.id }))}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? t('following') : t('follow')}</button><button className="secondary" onClick={() => { messageRequest.current += 1; setMessages([]); setSelectedProfile(p); setRecipient(p.id); setTab('messages'); }}><Mail size={16}/> {t('message')}</button></div></div>)}</div>}
+      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map(m => <div key={m.id} className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{m.body}</p><small>{when(m.created_at)}</small></div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>}
     </main>
   </div>;
 }
