@@ -5,6 +5,9 @@ import { supabase } from './lib/supabase.js';
 const MAX_POST = 500;
 const MAX_COMMENT = 300;
 const MAX_MESSAGE = 1000;
+// Only school accounts may join. The database enforces this too (supabase/migrations/0002_restrict_email_domain.sql).
+const SCHOOL_DOMAIN = 'osfl.ac.jp';
+const isSchoolEmail = value => value.trim().toLowerCase().endsWith(`@${SCHOOL_DOMAIN}`);
 const stamp = value => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const snip = (text, max = 70) => (text.length > max ? `${text.slice(0, max).trimEnd()}...` : text);
 const display = profile => profile?.display_name || profile?.handle || 'Member';
@@ -21,6 +24,7 @@ function Auth({ notify }) {
   async function submit(e) {
     e.preventDefault(); setError('');
     const h = handle.trim().toLowerCase();
+    if (!isSchoolEmail(email)) { setError(`Please use your school email address (e.g. w25009@${SCHOOL_DOMAIN}).`); return; }
     if (signup && (!/^[a-z][a-z0-9_]{2,33}$/.test(h) || !name.trim())) {
       setError('Enter a display name and a username of 3 to 34 lowercase letters, numbers, or underscores. The username must start with a letter.'); return;
     }
@@ -41,7 +45,7 @@ function Auth({ notify }) {
     {signup && <p className="muted">Share thoughts and start conversations.</p>}
     <form className="stack-form" onSubmit={submit}>
       {signup && <><label>Display name<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label><label>Username<input required minLength={3} maxLength={34} autoComplete="username" value={handle} onChange={e => setHandle(e.target.value.toLowerCase())} placeholder="your_username" /></label><p className="muted">Shown publicly as @username. Use lowercase letters, numbers, or underscores; start with a letter.</p></>}
-      <label>Email<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
+      <label>School email<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={`w25000@${SCHOOL_DOMAIN}`} /></label>
       <label>Password<input required type="password" minLength={6} autoComplete={signup ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)} /></label>
       {error && <p className="error-text" role="alert">{error}</p>}
       <button className="primary" disabled={busy}>{busy ? 'Please wait...' : signup ? 'Create account' : 'Sign in'}</button>
