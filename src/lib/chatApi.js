@@ -95,7 +95,7 @@ export async function loadEncryptedConversation(supabase, userId, recipientId, i
   const [recipientKey, messageResult] = await Promise.all([
     keyRow(supabase, recipientId),
     supabase.from('direct_messages')
-      .select('id,sender_id,recipient_id,body,encryption_version,encrypted_payload,created_at')
+      .select('id,sender_id,recipient_id,body,encryption_version,encrypted_payload,created_at,read_at')
       .or(`and(sender_id.eq.${userId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${userId})`)
       .order('created_at', { ascending: false }).limit(200),
   ]);

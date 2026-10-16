@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
+import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
+import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
@@ -35,6 +37,24 @@ const EMPTY_FORM = { display_name: '', handle: '', school: '', course: '', year:
 // A person's avatar and/or name, clickable to open their profile.
 function PersonLink({ onOpen, title, className = '', children }) {
   return <button type="button" className={`person-link ${className}`} onClick={onOpen} title={title}>{children}</button>;
+}
+function ReportDialog({ t, busy, onCancel, onSubmit }) {
+  const [reason, setReason] = useState('spam');
+  const [note, setNote] = useState('');
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+  return <div className="modal-backdrop" onClick={onCancel}>
+    <form className="modal panel report-form" role="dialog" aria-modal="true" aria-label={t('reportTitle')} onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); onSubmit(reason, note); }}>
+      <h3>{t('reportTitle')}</h3>
+      <p className="muted">{t('reportPrivacy')}</p>
+      <label>{t('reportReason')}<select value={reason} onChange={e => setReason(e.target.value)}>{['spam', 'harassment', 'inappropriate', 'other'].map(r => <option key={r} value={r}>{t(`reason_${r}`)}</option>)}</select></label>
+      <label>{t('reportNote')}<textarea rows={3} maxLength={300} value={note} onChange={e => setNote(e.target.value)}/></label>
+      <div className="form-actions-inline"><button type="button" className="secondary" onClick={onCancel}>{t('cancel')}</button><button className="danger-button" disabled={busy}>{t('sendReport')}</button></div>
+    </form>
+  </div>;
 }
 function ConfirmDialog({ message, confirmLabel, cancelLabel, onConfirm, onCancel }) {
   useEffect(() => {
@@ -135,6 +155,13 @@ export default function App() {
   const [tab, setTab] = useState('feed');
   const [profiles, setProfiles] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [activeGroup, setActiveGroup] = useState('');
+  const [groupEditName, setGroupEditName] = useState(null);
+  const [groupName, setGroupName] = useState('');
+  const [memberQuery, setMemberQuery] = useState('');
+  const [memberMatches, setMemberMatches] = useState([]);
   const [likes, setLikes] = useState([]);
   const [counts, setCounts] = useState([]);
   const [commentsByPost, setCommentsByPost] = useState({});
@@ -147,11 +174,17 @@ export default function App() {
   const [recipient, setRecipient] = useState('');
   const [query, setQuery] = useState('');
   const [postText, setPostText] = useState('');
+  const [postAudience, setPostAudience] = useState('school');
+  const [postGroup, setPostGroup] = useState('');
+  const [chosenStudents, setChosenStudents] = useState([]);
+  const [audienceQuery, setAudienceQuery] = useState('');
+  const [audienceMatches, setAudienceMatches] = useState([]);
   const [postImages, setPostImages] = useState([]); // [{ file, preview }] picked in the composer
   const postImageInput = useRef(null);
   const editImageInput = useRef(null);
   const [menuPost, setMenuPost] = useState(''); // post whose ⋯ menu is open
   const [editingPost, setEditingPost] = useState(null); // { id, body, keep, added, original }
+  const [reportTarget, setReportTarget] = useState(null); // { type, id }
   const [confirmBox, setConfirmBox] = useState(null); // { message, confirmLabel, onConfirm }
   const [lightbox, setLightbox] = useState(null); // { paths, index }
   const [focusPost, setFocusPost] = useState({ id: '', post: null, loading: false }); // single-post page
@@ -166,7 +199,16 @@ export default function App() {
     return () => document.removeEventListener('click', close);
   }, [menuPost]);
   const avatarInput = useRef(null);
+  const groupAvatarInput = useRef(null);
   const [messageText, setMessageText] = useState('');
+  const [chatIdentity, setChatIdentity] = useState(null);
+  const [chatKeyLoading, setChatKeyLoading] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryInput, setRecoveryInput] = useState('');
+  const [recipientKey, setRecipientKey] = useState(null);
+  const [recipientFingerprint, setRecipientFingerprint] = useState('');
+  const [verifiedRecipientFingerprint, setVerifiedRecipientFingerprint] = useState('');
+  const [blockedIds, setBlockedIds] = useState([]);
   const [commentText, setCommentText] = useState({});
   const [openComments, setOpenComments] = useState({});
   const [busy, setBusy] = useState('');
@@ -202,6 +244,8 @@ export default function App() {
   const userId = session?.user?.id;
   const messageRequest = useRef(0);
   const recipientRef = useRef('');
+  const chatIdentityRef = useRef(null);
+  useEffect(() => { chatIdentityRef.current = chatIdentity; }, [chatIdentity]);
   useEffect(() => {
     if (!supabase) { setChecking(false); return; }
     let active = true;
@@ -225,16 +269,18 @@ export default function App() {
     if (!userId) return;
     if (spin) setLoading(true);
     try {
-      const [postResult, recentProfiles, followResult] = await Promise.all([
+      const [postResult, recentProfiles, followResult, groupResult, membershipResult] = await Promise.all([
         supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(100),
         supabase.from('profiles').select('*').order('created_at', { ascending: false }).limit(50),
         supabase.from('follows').select('follower_id,following_id').eq('follower_id', userId),
+        supabase.from('student_groups').select('id,name,owner_id,created_at,avatar_path').order('created_at', { ascending: false }),
+        supabase.from('student_group_members').select('group_id,user_id,joined_at'),
       ]);
-      const firstError = [postResult, recentProfiles, followResult].find(r => r.error);
+      const firstError = [postResult, recentProfiles, followResult, groupResult, membershipResult].find(r => r.error);
       if (firstError) throw firstError.error;
       const postRows = postResult.data || [];
       const ids = postRows.map(p => p.id);
-      const authorIds = [...new Set([...postRows.map(p => p.author_id), userId])];
+      const authorIds = [...new Set([...postRows.map(p => p.author_id), ...(membershipResult.data || []).map(m => m.user_id), userId])];
       const [authorResult, countResult, likeResult] = await Promise.all([
         supabase.from('profiles').select('*').in('id', authorIds),
         ids.length ? supabase.from('post_counts').select('post_id,like_count,comment_count').in('post_id', ids) : Promise.resolve({ data: [], error: null }),
@@ -246,11 +292,44 @@ export default function App() {
       if (!(authorResult.data || []).some(p => p.id === userId)) { await rejectAccount('errNoProfile'); return; }
       const byId = new Map([...(recentProfiles.data || []), ...(authorResult.data || [])].map(p => [p.id, p]));
       setProfiles([...byId.values()]); setPosts(postRows);
+      setGroups(groupResult.data || []); setGroupMembers(membershipResult.data || []);
       setCounts(countResult.data || []); setLikes(likeResult.data || []);
       setFollows(followResult.data || []); setError('');
     } catch (err) { setError(err.message || translate(langRef.current, 'errLoadCommunity')); }
     finally { if (spin) setLoading(false); }
   }, [userId, rejectAccount]);
+  useEffect(() => {
+    if (!userId) return undefined;
+    const term = audienceQuery.trim().replace(/[%_]/g, '');
+    if (!term || postAudience !== 'selected') { setAudienceMatches([]); return undefined; }
+    let active = true;
+    const timer = setTimeout(async () => {
+      const [handles, names] = await Promise.all([
+        supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('handle', `%${term}%`).limit(15),
+        supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('display_name', `%${term}%`).limit(15),
+      ]);
+      if (!active) return;
+      if (handles.error || names.error) { setError((handles.error || names.error).message); return; }
+      setAudienceMatches([...new Map([...(handles.data || []), ...(names.data || [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()].slice(0, 20));
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [userId, audienceQuery, postAudience]);
+  useEffect(() => {
+    if (!userId || tab !== 'groups') return undefined;
+    const term = memberQuery.trim().replace(/[%_]/g, '');
+    if (!term) { setMemberMatches([]); return undefined; }
+    let active = true;
+    const timer = setTimeout(async () => {
+      const [handles, names] = await Promise.all([
+        supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('handle', `%${term}%`).limit(15),
+        supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('display_name', `%${term}%`).limit(15),
+      ]);
+      if (!active) return;
+      if (handles.error || names.error) { setError((handles.error || names.error).message); return; }
+      setMemberMatches([...new Map([...(handles.data || []), ...(names.data || [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()].slice(0, 20));
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [userId, tab, memberQuery]);
   const loadComments = useCallback(async postId => {
     setLoadingComments(prev => ({ ...prev, [postId]: true }));
     const { data, error: err } = await supabase.from('comments')
@@ -272,20 +351,36 @@ export default function App() {
   }, []);
   const loadMessages = useCallback(async () => {
     if (!userId || !recipient) { setMessages([]); return; }
+    if (!chatIdentityRef.current?.privateKey) { setMessages([]); return; }
     const requestId = ++messageRequest.current;
-    const { data, error: err } = await supabase.from('direct_messages')
-      .select('*')
-      .or(`and(sender_id.eq.${userId},recipient_id.eq.${recipient}),and(sender_id.eq.${recipient},recipient_id.eq.${userId})`)
-      .order('created_at', { ascending: false }).limit(200);
-    if (requestId !== messageRequest.current || recipient !== recipientRef.current) return;
-    if (err) { setError(err.message); return; }
-    setMessages((data || []).reverse()); setError('');
-    // I'm looking at this conversation, so tell the sender I've seen their messages.
-    // (read_at is undefined until 0007_message_seen.sql has been run; then this is skipped.)
-    if (document.visibilityState === 'visible' && (data || []).some(m => m.sender_id === recipient && m.read_at === null)) {
-      await supabase.rpc('mark_messages_read', { other_user: recipient });
+    try {
+      const result = await loadEncryptedConversation(supabase, userId, recipient, chatIdentityRef.current);
+      if (requestId !== messageRequest.current || recipient !== recipientRef.current) return;
+      setMessages(result.messages); setRecipientKey(result.recipientKey);
+      setRecipientFingerprint(result.recipientFingerprint); setError('');
+      if (document.visibilityState === 'visible' && result.messages.some(m => m.sender_id === recipient && m.read_at === null)) {
+        await supabase.rpc('mark_messages_read', { other_user: recipient });
+      }
+    } catch (err) {
+      if (requestId === messageRequest.current) setError(err.message || t('errMessage'));
     }
   }, [userId, recipient]);
+  useEffect(() => {
+    if (!userId) { setChatIdentity(null); setBlockedIds([]); return undefined; }
+    let active = true;
+    setChatKeyLoading(true);
+    Promise.all([
+      loadChatIdentity(supabase, userId),
+      supabase.from('user_blocks').select('blocked_id').eq('blocker_id', userId),
+    ]).then(([identity, blockResult]) => {
+      if (!active) return;
+      if (blockResult.error) throw blockResult.error;
+      setChatIdentity(identity); setRecoveryCode(identity.recoveryCode || '');
+      setBlockedIds((blockResult.data || []).map(b => b.blocked_id));
+    }).catch(err => { if (active) setError(err.message || 'Could not load private chat.'); })
+      .finally(() => { if (active) setChatKeyLoading(false); });
+    return () => { active = false; };
+  }, [userId]);
   const loadProfile = useCallback(async id => {
     if (!userId || !id) return;
     const requestId = ++profileRequest.current;
@@ -360,8 +455,15 @@ export default function App() {
     try { localStorage.setItem(`campconnect_seen_${userId}`, JSON.stringify(seen)); } catch { /* storage unavailable */ }
   }, [userId, seen]);
   useEffect(() => { if (seen && followers && seen.followers === null) setSeen(s => ({ ...s, followers })); }, [seen, followers]);
-  useEffect(() => { recipientRef.current = recipient; messageRequest.current += 1; setMessages([]); }, [recipient, userId]);
-  useEffect(() => { if (tab === 'messages') loadMessages(); }, [tab, loadMessages]);
+  useEffect(() => { recipientRef.current = recipient; messageRequest.current += 1; setMessages([]); setRecipientKey(null); setRecipientFingerprint(''); }, [recipient, userId]);
+  useEffect(() => {
+    if (!userId || !recipient || !recipientFingerprint) { setVerifiedRecipientFingerprint(''); return; }
+    try {
+      const saved = localStorage.getItem(`campconnect:verified-key:${userId}:${recipient}`);
+      setVerifiedRecipientFingerprint(saved === recipientFingerprint ? saved : '');
+    } catch { setVerifiedRecipientFingerprint(''); }
+  }, [userId, recipient, recipientFingerprint]);
+  useEffect(() => { if (tab === 'messages' && chatIdentity?.privateKey) loadMessages(); }, [tab, loadMessages, chatIdentity]);
   useEffect(() => {
     if (tab !== 'profile' || !viewProfileId) return;
     setProfileView(v => (v.id === viewProfileId ? { ...v, loading: true } : { id: viewProfileId, data: null, posts: [], followers: 0, following: 0, loading: true }));
@@ -499,6 +601,7 @@ export default function App() {
   // Turn picked files into previews, keeping the total at MAX_IMAGES.
   function pickImages(e, existingCount, add) {
     const files = [...(e.target.files || [])]; e.target.value = '';
+    if (postAudience !== 'school' && e.target === postImageInput.current) { setError(t('restrictedTextOnly')); return; }
     if (!files.length) return;
     if (files.some(f => !isImageFile(f))) { setError(t('errImageType')); return; }
     const room = MAX_IMAGES - existingCount;
@@ -517,20 +620,87 @@ export default function App() {
   async function publish(e) {
     e.preventDefault(); const body = postText.trim();
     if ((!body && !postImages.length) || body.length > MAX_POST) return;
+    if (postAudience !== 'school' && (!body || postImages.length)) { setError(t('restrictedTextOnly')); return; }
+    if (postAudience === 'selected' && !chosenStudents.length) { setError(t('chooseRecipients')); return; }
+    if (postAudience === 'group' && !postGroup) { setError(t('chooseGroup')); return; }
     setBusy('post'); setError('');
     let paths = [];
     try {
       paths = await uploadPostImages(postImages);
-      let { error: err } = await supabase.from('posts').insert(paths.length ? { author_id: userId, body, image_paths: paths } : { author_id: userId, body });
-      // Before 0006 there is only the single image_path column; a one-image post still works then.
-      if (err?.code === 'PGRST204' && paths.length === 1) ({ error: err } = await supabase.from('posts').insert({ author_id: userId, body, image_path: paths[0] }));
+      const { error: err } = await supabase.rpc('create_audience_post', {
+        p_body: body, p_audience: postAudience,
+        p_user_ids: postAudience === 'selected' ? chosenStudents.map(p => p.id) : null,
+        p_group_id: postAudience === 'group' ? postGroup : null,
+        p_image_paths: paths,
+      });
       if (err) throw err;
-      setPostText(''); dropPreviews(postImages); setPostImages([]);
+      setPostText(''); dropPreviews(postImages); setPostImages([]); setChosenStudents([]); setAudienceQuery('');
       await loadCommunity();
     } catch (err) {
       await removeImages(POST_IMAGE_BUCKET, paths); // don't leave orphaned files behind
       setError(paths.length > 1 ? editErrorText(err) : imageErrorText(err));
     } finally { setBusy(''); }
+  }
+  async function createGroup(e) {
+    e.preventDefault();
+    if (!groupName.trim()) return;
+    setBusy('group'); setError('');
+    try {
+      const { data, error: err } = await supabase.rpc('create_student_group', { p_name: groupName.trim() });
+      if (err) throw err;
+      setGroupName(''); setActiveGroup(data);
+      await loadCommunity();
+    } catch (err) { setError(err.message || t('errAction')); }
+    finally { setBusy(''); }
+  }
+  async function submitReport(reason, note) {
+    const target = reportTarget; if (!target) return;
+    setBusy('report'); setError('');
+    const { error: err } = await supabase.rpc('report_content', { p_target_type: target.type, p_target_id: target.id, p_reason: reason, p_note: note });
+    setBusy('');
+    if (err) { setError(err.message || t('errAction')); return; }
+    setReportTarget(null); setFlash(t('reportSent'));
+  }
+  async function renameGroup(e) {
+    e.preventDefault();
+    const name = groupEditName.trim();
+    if (!name || !currentGroup) return;
+    setBusy('group'); setError('');
+    try {
+      const { error: err } = await supabase.rpc('rename_student_group', { p_group_id: currentGroup.id, p_name: name });
+      if (err) throw err;
+      setGroupEditName(null); await loadCommunity();
+    } catch (err) { setError(err.message || t('errAction')); }
+    finally { setBusy(''); }
+  }
+  async function changeGroupAvatar(e) {
+    const file = e.target.files?.[0]; e.target.value = '';
+    if (!file || !currentGroup) return;
+    if (!isImageFile(file)) { setError(t('errImageType')); return; }
+    const oldPath = currentGroup.avatar_path;
+    setBusy('group-photo'); setError('');
+    let newPath = null;
+    try {
+      newPath = await uploadImage(AVATAR_BUCKET, userId, await shrinkImage(file, 512, true));
+      const { error: err } = await supabase.rpc('set_student_group_avatar', { p_group_id: currentGroup.id, p_avatar_path: newPath });
+      if (err) throw err;
+      if (oldPath) removeImage(AVATAR_BUCKET, oldPath);
+      await loadCommunity();
+    } catch (err) {
+      if (newPath) removeImage(AVATAR_BUCKET, newPath);
+      setError(imageErrorText(err));
+    } finally { setBusy(''); }
+  }
+  async function changeGroupMember(groupId, personId, remove = false) {
+    setBusy('group-member'); setError('');
+    try {
+      const { error: err } = await supabase.rpc(remove ? 'remove_student_group_member' : 'add_student_group_member', {
+        p_group_id: groupId, p_user_id: personId,
+      });
+      if (err) throw err;
+      setMemberQuery(''); await loadCommunity();
+    } catch (err) { setError(err.message || t('errAction')); }
+    finally { setBusy(''); }
   }
   const deletePost = post => mutate('delete', async () => {
     const result = await supabase.from('posts').delete().eq('id', post.id);
@@ -539,7 +709,7 @@ export default function App() {
   }, () => { if (tab === 'post') setTab('feed'); });
   function startEditPost(post) {
     setMenuPost('');
-    setEditingPost({ id: post.id, body: post.body || '', keep: postImagePaths(post), added: [], original: postImagePaths(post) });
+    setEditingPost({ id: post.id, audience: post.audience || 'school', body: post.body || '', keep: postImagePaths(post), added: [], original: postImagePaths(post) });
   }
   function cancelEditPost() {
     if (editingPost) dropPreviews(editingPost.added);
@@ -550,11 +720,13 @@ export default function App() {
     const { id, keep, added, original } = editingPost;
     const body = editingPost.body.trim();
     if ((!body && !keep.length && !added.length) || body.length > MAX_POST) return;
+    if (editingPost.audience !== 'school' && (!body || keep.length || added.length)) { setError(t('restrictedTextOnly')); return; }
     setBusy('edit'); setError('');
     let newPaths = [];
     try {
-      newPaths = await uploadPostImages(added);
-      const { data, error: err } = await supabase.from('posts').update({ body, image_paths: [...keep, ...newPaths], image_path: null }).eq('id', id).select('id');
+      if (editingPost.audience === 'school') newPaths = await uploadPostImages(added);
+      const changes = editingPost.audience === 'school' ? { body, image_paths: [...keep, ...newPaths], image_path: null } : { body };
+      const { data, error: err } = await supabase.from('posts').update(changes).eq('id', id).select('id');
       if (err) throw err;
       if (!data?.length) throw { code: '42501' }; // no row changed: editing isn't allowed yet (0006 not run)
       await removeImages(POST_IMAGE_BUCKET, original.filter(p => !keep.includes(p)));
@@ -612,12 +784,61 @@ export default function App() {
   async function sendMessage(e) {
     e.preventDefault(); const body = messageText.trim();
     if (!recipient || !body || body.length > MAX_MESSAGE) return;
+    if (!recipientFingerprint || verifiedRecipientFingerprint !== recipientFingerprint) {
+      setError(t('verifyContactKeyFirst')); return;
+    }
     setBusy('message'); setError('');
     try {
-      const { error: err } = await supabase.from('direct_messages').insert({ sender_id: userId, recipient_id: recipient, body });
-      if (err) throw err;
+      await sendEncryptedMessage(supabase, userId, recipient, body, chatIdentity, recipientFingerprint);
       setMessageText(''); await loadMessages();
     } catch (err) { setError(err.message || t('errMessage')); }
+    finally { setBusy(''); }
+  }
+  async function enableChat() {
+    setBusy('chat-key'); setError('');
+    try {
+      const identity = await registerChatIdentity(supabase, userId);
+      setChatIdentity(identity); setRecoveryCode(identity.recoveryCode || '');
+    } catch (err) { setError(err.message || t('errMessage')); }
+    finally { setBusy(''); }
+  }
+  async function restoreChat(e) {
+    e.preventDefault(); setBusy('chat-restore'); setError('');
+    try {
+      const identity = await recoverChatIdentity(supabase, userId, recoveryInput.trim());
+      setChatIdentity(identity); setRecoveryInput('');
+    } catch (err) { setError(err.message || t('errMessage')); }
+    finally { setBusy(''); }
+  }
+  async function resetChat() {
+    askConfirm(t('confirmResetChat'), t('resetChatKey'), async () => {
+      setBusy('chat-reset'); setError('');
+      try {
+        const identity = await resetChatIdentity(supabase, userId);
+        setChatIdentity(identity); setRecoveryCode(identity.recoveryCode);
+        setMessages([]); setRecipientKey(null); setRecipientFingerprint('');
+      } catch (err) { setError(err.message || t('errMessage')); }
+      finally { setBusy(''); }
+    });
+  }
+  function verifyRecipientKey() {
+    if (!userId || !recipient || !recipientFingerprint) return;
+    try { localStorage.setItem(`campconnect:verified-key:${userId}:${recipient}`, recipientFingerprint); }
+    catch { setError(t('cannotRememberKey')); }
+    setVerifiedRecipientFingerprint(recipientFingerprint);
+  }
+  async function toggleBlock() {
+    if (!recipient) return;
+    const blocked = blockedIds.includes(recipient);
+    setBusy('block'); setError('');
+    try {
+      const operation = blocked
+        ? supabase.from('user_blocks').delete().eq('blocker_id', userId).eq('blocked_id', recipient)
+        : supabase.from('user_blocks').insert({ blocker_id: userId, blocked_id: recipient });
+      const { error: err } = await operation;
+      if (err) throw err;
+      setBlockedIds(prev => blocked ? prev.filter(id => id !== recipient) : [...prev, recipient]);
+    } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
   }
   function openNotification(n) {
@@ -652,8 +873,9 @@ export default function App() {
   async function sendShare(person) {
     const post = shareTarget;
     setShareTarget(null); setShareQuery('');
-    const { error: err } = await supabase.from('direct_messages').insert({ sender_id: userId, recipient_id: person.id, body: `${t('sharedPostIntro')}\n${postLink(post.id)}` });
-    if (err) setError(err.message); else setFlash(t('sharedWith', { name: display(person) }));
+    setRecipient(person.id); setTab('messages');
+    setMessageText(`${t('sharedPostIntro')}\n${postLink(post.id)}`);
+    setFlash(t('shareDraftReady'));
   }
   const loadFocusPost = useCallback(async id => {
     const { data, error: err } = await supabase.from('posts').select('*').eq('id', id).maybeSingle();
@@ -748,7 +970,11 @@ export default function App() {
             <button role="menuitem" className="danger-text" onClick={() => { setMenuPost(''); askConfirm(t('confirmDelete'), t('deletePost'), () => deletePost(post)); }}><Trash2 size={16}/> {t('deletePost')}</button>
           </div>}
         </div>}
+        {post.author_id !== userId && <div className="post-menu">
+          <button className="icon-button" aria-label={t('reportPost')} title={t('reportPost')} onClick={() => setReportTarget({ type: 'post', id: post.id })}><Flag size={16}/></button>
+        </div>}
       </div>
+      <div className="post-audience"><span className="tag">{post.audience === 'group' ? t('audienceGroupNamed', { name: groups.find(group => group.id === post.group_id)?.name || t('audienceGroup') }) : post.audience === 'selected' ? t('audienceSelected') : t('audienceSchool')}</span></div>
       {editing ? <form className="post-edit" onSubmit={saveEditPost}>
         <textarea aria-label={t('editPost')} value={editingPost.body} maxLength={MAX_POST} rows={3} onChange={e => setEditingPost(prev => ({ ...prev, body: e.target.value }))}/>
         {(editingPost.keep.length + editingPost.added.length) > 0 && <div className="image-previews">
@@ -756,7 +982,7 @@ export default function App() {
           {editingPost.added.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" aria-label={t('removeImage')} title={t('removeImage')} onClick={() => setEditingPost(prev => { dropPreviews([item]); return { ...prev, added: prev.added.filter((_, j) => j !== i) }; })}><X size={15}/></button></div>)}
         </div>}
         <div className="composer-footer"><div className="composer-tools">
-          <button type="button" className="icon-button" disabled={busy !== '' || editingPost.keep.length + editingPost.added.length >= MAX_IMAGES} onClick={() => editImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button>
+          {editingPost.audience === 'school' && <button type="button" className="icon-button" disabled={busy !== '' || editingPost.keep.length + editingPost.added.length >= MAX_IMAGES} onClick={() => editImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button>}
           <input ref={editImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, editingPost.keep.length + editingPost.added.length, items => setEditingPost(prev => ({ ...prev, added: [...prev.added, ...items] })))}/>
           <small>{editingPost.body.length}/{MAX_POST}</small>
         </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy === 'edit'} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
@@ -773,7 +999,7 @@ export default function App() {
           </div>}
         </div>
       </div>
-      {openComments[post.id] && <div className="comments"><h3>{t('comments')}</h3>{loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}{postComments.map(c => <div className="comment" key={c.id}><PersonLink {...linkProps(c.author_id)}><Avatar profile={profileMap.get(c.author_id)}/></PersonLink><div><PersonLink {...linkProps(c.author_id)}><strong>{display(profileMap.get(c.author_id))}</strong></PersonLink><small> - {when(c.created_at)}</small><p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label={t('sendComment')}><Send size={16}/></button></form></div>}
+      {openComments[post.id] && <div className="comments"><h3>{t('comments')}</h3>{loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}{postComments.map(c => <div className="comment" key={c.id}><PersonLink {...linkProps(c.author_id)}><Avatar profile={profileMap.get(c.author_id)}/></PersonLink><div><PersonLink {...linkProps(c.author_id)}><strong>{display(profileMap.get(c.author_id))}</strong></PersonLink><small> - {when(c.created_at)}</small>{c.author_id !== userId && <button type="button" className="icon-button report-comment" aria-label={t('reportComment')} title={t('reportComment')} onClick={() => setReportTarget({ type: 'comment', id: c.id })}><Flag size={13}/></button>}<p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label={t('sendComment')}><Send size={16}/></button></form></div>}
     </article>;
   }
   function renderProfile() {
@@ -819,7 +1045,7 @@ export default function App() {
           <label>{t('username')}<input required minLength={3} maxLength={34} value={form.handle} onChange={e => setForm(prev => ({ ...prev, handle: e.target.value.toLowerCase() }))}/></label>
           <label>{t('school')}<select value={form.school} onChange={setField('school')}><option value="">{t('chooseOne')}</option><option value="gaigo">{t('schoolGaigo')}</option><option value="itcollege">{t('schoolItcollege')}</option></select></label>
           <label>{t('course')}<input maxLength={80} value={form.course} onChange={setField('course')} placeholder={t('coursePlaceholder')}/></label>
-          <label>{t('year')}<select value={form.year} onChange={setField('year')}><option value="">{t('chooseOne')}</option>{[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={n}>{t('yearValue', { n })}</option>)}</select></label>
+          <label>{t('year')}<select value={form.year} onChange={setField('year')}><option value="">{t('chooseOne')}</option>{[1, 2, 3].map(n => <option key={n} value={n}>{t('yearValue', { n })}</option>)}</select></label>
           <label>{t('gender')}<select value={form.gender} onChange={setField('gender')}><option value="">{t('chooseOne')}</option><option value="male">{t('genderMale')}</option><option value="female">{t('genderFemale')}</option><option value="other">{t('genderOther')}</option><option value="private">{t('genderPrivate')}</option></select></label>
           <label>{t('birthday')}<input type="date" min="1900-01-01" max={new Date().toISOString().slice(0, 10)} value={form.birthday} onChange={setField('birthday')}/><small>{t('birthdayNote')}</small></label>
           <label>{t('hometown')}<input maxLength={80} value={form.hometown} onChange={setField('hometown')} placeholder={t('hometownPlaceholder')}/></label>
@@ -832,7 +1058,9 @@ export default function App() {
       {profileView.posts.map(renderPost)}
     </div>;
   }
-  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), messages: t('navMessages'), profile: t('navProfile'), post: t('postTitle') };
+  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), groups: t('navGroups'), messages: t('navMessages'), profile: t('navProfile'), post: t('postTitle') };
+  const currentGroup = groups.find(group => group.id === activeGroup) || groups[0];
+  const currentGroupMembers = currentGroup ? groupMembers.filter(member => member.group_id === currentGroup.id) : [];
   const viewingOther = tab === 'profile' && viewProfileId && viewProfileId !== userId;
   // "Sent" / "Seen" is shown under my most recent message only, like most chat apps.
   const lastMineIndex = messages.map(m => m.sender_id === userId).lastIndexOf(true);
@@ -846,18 +1074,25 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand">CampConnect</div>
-      <nav aria-label={t('mainNav')}>{[['feed', Home], ['notifications', Bell], ['people', Users], ['messages', Mail], ['profile', User]].map(([id, Icon]) => {
+      <nav aria-label={t('mainNav')}>{[['feed', Home], ['notifications', Bell], ['people', Users], ['groups', UsersRound], ['messages', Mail], ['profile', User]].map(([id, Icon]) => {
         // "Profile" in the menu means my own profile; viewing someone else's highlights nothing.
         const current = id === 'profile' ? tab === 'profile' && viewProfileId === userId : tab === id;
         return <button key={id} className={`nav-link ${current ? 'selected' : ''}`} aria-current={current ? 'page' : undefined} onClick={() => (id === 'profile' ? openProfile(userId) : setTab(id))}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>;
       })}</nav>
-      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div></div>
+      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>
-        <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/>{postImages.length > 0 && <div className="image-previews">{postImages.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" onClick={() => removePostImage(i)} disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')}><X size={15}/></button></div>)}</div>}<div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-button" disabled={busy !== '' || postImages.length >= MAX_IMAGES} onClick={() => postImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button><input ref={postImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, postImages.length, items => setPostImages(prev => [...prev, ...items]))}/><small>{postText.length}/{MAX_POST}{postImages.length > 0 && ` · ${t('imageCount', { n: postImages.length, max: MAX_IMAGES })}`}</small></div><button className="primary" disabled={busy !== '' || (!postText.trim() && !postImages.length)}><Send size={16}/> {busy === 'post' ? t('uploading') : t('post')}</button></div></form>
+        <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/><div className="audience-inline"><select aria-label={t('postAudience')} value={postAudience} onChange={e => { const next = e.target.value; if (next !== 'school') { dropPreviews(postImages); setPostImages([]); } setPostAudience(next); }}><option value="school">{t('audienceSchool')}</option><option value="selected">{t('audienceSelected')}</option><option value="group">{t('audienceGroup')}</option></select>
+          {postAudience === 'selected' && <div className="audience-detail">
+            <input aria-label={t('chooseStudents')} value={audienceQuery} onChange={e => setAudienceQuery(e.target.value)} placeholder={t('chooseStudents')}/>
+            {chosenStudents.length > 0 && <div className="selected-chips">{chosenStudents.map(person => <button type="button" key={person.id} className="tag" onClick={() => setChosenStudents(prev => prev.filter(p => p.id !== person.id))} aria-label={t('removeRecipient', { name: display(person) })}>{display(person)} ×</button>)}</div>}
+            {audienceQuery.trim() && <div className="audience-results">{audienceMatches.filter(p => !chosenStudents.some(chosen => chosen.id === p.id)).map(person => <button type="button" key={person.id} onClick={() => { setChosenStudents(prev => [...prev, person]); setAudienceQuery(''); }}><Avatar profile={person}/><span>{display(person)} <small>@{person.handle}</small></span></button>)}</div>}
+          </div>}
+          {postAudience === 'group' && <><select aria-label={t('chooseGroup')} value={postGroup} onChange={e => setPostGroup(e.target.value)}><option value="">{t('chooseGroup')}</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select>{groups.length === 0 && <small>{t('createGroupFirst')}</small>}</>}
+          {postAudience !== 'school' && <small className="muted">{t('restrictedTextOnly')}</small>}</div>{postImages.length > 0 && <div className="image-previews">{postImages.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" onClick={() => removePostImage(i)} disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')}><X size={15}/></button></div>)}</div>}<div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-button" disabled={busy !== '' || postAudience !== 'school' || postImages.length >= MAX_IMAGES} onClick={() => postImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button><input ref={postImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, postImages.length, items => setPostImages(prev => [...prev, ...items]))}/><small>{postText.length}/{MAX_POST}{postImages.length > 0 && ` · ${t('imageCount', { n: postImages.length, max: MAX_IMAGES })}`}</small></div><button className="primary" disabled={busy !== '' || (!postText.trim() && !postImages.length)}><Send size={16}/> {busy === 'post' ? t('uploading') : t('post')}</button></div></form>
         <div className="section-heading"><h2>{t('latestPosts')}</h2>{loading && <span>{t('loading')}</span>}</div>
         {!loading && posts.length === 0 && <div className="empty panel">{t('noPosts')}</div>}
         {posts.map(renderPost)}
@@ -877,7 +1112,38 @@ export default function App() {
         })}
       </div>}
       {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder={t('searchPeople')} aria-label={t('searchPeople')}/></label><div className="section-heading"><h2>{t('members')}</h2><span>{searching ? t('searching') : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? t('noMatch') : t('noMembers')}</div>}{filtered.map(p => <div className="member panel" key={p.id}><PersonLink {...linkProps(p.id)} className="member-person"><Avatar profile={p}/><span className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">{t('newFollower')}</span> : followerIds.has(p.id) && <span className="tag">{t('followsYou')}</span>}</span></PersonLink><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => toggleFollow(p.id)}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? t('following') : t('follow')}</button><button className="secondary" onClick={() => openConversation(p)}><Mail size={16}/> {t('message')}</button></div></div>)}</div>}
-      {tab === 'messages' && <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong></PersonLink><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''}`}><p>{renderMessageBody(m.body)}</p><small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)}/><button className="primary" disabled={busy !== '' || !messageText.trim()} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>}
+      {tab === 'groups' && <div className="groups-page">
+        <input ref={groupAvatarInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={changeGroupAvatar}/>
+        <form className="panel group-create" onSubmit={createGroup}>
+          <h2>{t('createGroup')}</h2>
+          <div className="group-create-row"><input aria-label={t('groupName')} maxLength={80} value={groupName} onChange={e => setGroupName(e.target.value)} placeholder={t('groupName')}/><button className="primary" disabled={busy !== '' || !groupName.trim()}><UserPlus size={16}/>{t('createGroup')}</button></div>
+        </form>
+        {groups.length === 0 ? <div className="empty panel">{t('noGroups')}</div> : <>
+          <div className="group-picker" role="group" aria-label={t('yourGroups')}>{groups.map(group => <button type="button" key={group.id} className={currentGroup?.id === group.id ? 'secondary selected' : 'secondary'} onClick={() => setActiveGroup(group.id)}>{group.name}</button>)}</div>
+          {currentGroup && <section className="panel group-detail">
+            {groupEditName !== null && currentGroup.owner_id === userId
+              ? <form className="group-rename" onSubmit={renameGroup}><input aria-label={t('groupName')} maxLength={80} value={groupEditName} onChange={e => setGroupEditName(e.target.value)} autoFocus/><button className="primary" disabled={busy !== '' || !groupEditName.trim()}>{t('saveProfile')}</button><button type="button" className="secondary" onClick={() => setGroupEditName(null)}>{t('cancel')}</button></form>
+              : <div className="group-title"><div className={`avatar-wrap ${busy === 'group-photo' ? 'uploading' : ''}`}><Avatar profile={{ display_name: currentGroup.name, avatar_path: currentGroup.avatar_path }}/>{currentGroup.owner_id === userId && <button type="button" className="avatar-edit group-avatar-edit" disabled={busy !== ''} onClick={() => groupAvatarInput.current?.click()} aria-label={currentGroup.avatar_path ? t('changePhoto') : t('addPhoto')} title={currentGroup.avatar_path ? t('changePhoto') : t('addPhoto')}><Camera size={14}/></button>}</div><h2>{currentGroup.name}</h2>{currentGroup.owner_id === userId && <button type="button" className="icon-button group-edit-btn" onClick={() => setGroupEditName(currentGroup.name)} aria-label={t('editGroup')} title={t('editGroup')}><Pencil size={14}/></button>}</div>}<p className="muted">{t('groupPostsHint')}</p>
+            <h3>{t('groupMembers')}</h3>
+            <div className="group-member-list">{currentGroupMembers.map(member => { const person = profileMap.get(member.user_id); return <div className="group-member" key={member.user_id}><Avatar profile={person}/><span><strong>{display(person)}</strong><small>@{person?.handle || 'member'} · {t('joinedGroup', { date: when(member.joined_at) })}</small></span>{currentGroup.owner_id === userId && member.user_id !== userId && <button type="button" className="secondary" disabled={busy !== ''} onClick={() => askConfirm(t('confirmRemoveGroupMember', { name: display(person) }), t('removeMember'), () => changeGroupMember(currentGroup.id, member.user_id, true))}>{t('removeMember')}</button>}</div>; })}</div>
+            {currentGroup.owner_id === userId && <div className="group-invite"><label>{t('addMember')}<input value={memberQuery} onChange={e => setMemberQuery(e.target.value)} placeholder={t('searchPeople')}/></label>{memberQuery.trim() && <div className="audience-results">{memberMatches.filter(person => !currentGroupMembers.some(member => member.user_id === person.id)).map(person => <button type="button" key={person.id} disabled={busy !== ''} onClick={() => changeGroupMember(currentGroup.id, person.id)}><Avatar profile={person}/><span>{display(person)} <small>@{person.handle}</small></span><UserPlus size={16}/></button>)}</div>}</div>}
+          </section>}
+          <div className="section-heading"><h2>{t('groupPosts')}</h2></div>
+          {posts.filter(post => post.audience === 'group' && post.group_id === currentGroup?.id).map(renderPost)}
+          {!posts.some(post => post.audience === 'group' && post.group_id === currentGroup?.id) && <div className="empty panel">{t('noGroupPosts')}</div>}
+        </>}
+      </div>}
+      {tab === 'messages' && <>
+        {chatKeyLoading && <div className="empty panel">{t('loadingPrivateChat')}</div>}
+        {!chatKeyLoading && !chatIdentity && <div className="empty panel">{t('chatUnavailable')}</div>}
+        {!chatKeyLoading && chatIdentity?.status === 'new' && <div className="panel chat-setup"><Shield size={28}/><h2>{t('enablePrivateChat')}</h2><p>{t('enablePrivateChatNote')}</p><button className="primary" disabled={busy !== ''} onClick={enableChat}>{t('createChatKey')}</button></div>}
+        {!chatKeyLoading && chatIdentity?.status === 'restore' && <div className="panel chat-setup"><Shield size={28}/><h2>{t('restorePrivateChat')}</h2><p>{t('restorePrivateChatNote')}</p><form onSubmit={restoreChat} className="stack-form"><label>{t('recoveryCode')}<input required value={recoveryInput} onChange={e => setRecoveryInput(e.target.value)} autoComplete="off"/></label><button className="primary" disabled={busy !== ''}>{t('restoreChat')}</button></form><div className="reset-chat"><p className="muted">{t('lostRecoveryNote')}</p><button className="secondary" disabled={busy !== ''} onClick={resetChat}>{t('resetChatKey')}</button></div></div>}
+        {!chatKeyLoading && chatIdentity?.status === 'ready' && <>
+          {recoveryCode && <div className="panel recovery-notice" role="status"><h2>{t('saveRecoveryCode')}</h2><p>{t('saveRecoveryNote')}</p><code>{recoveryCode}</code><button className="secondary" onClick={async () => { try { await acknowledgeRecoveryCode(userId); setRecoveryCode(''); } catch (err) { setError(err.message || t('errAction')); } }}>{t('savedRecoveryCode')}</button></div>}
+          <div className="chat-security-note"><Shield size={17}/><span>{t('chatSecurityNote')}</span></div>
+          <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong>{display(p)}</strong><small>@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong>{display(profileMap.get(recipient))}</strong></PersonLink><button className="secondary block-button" disabled={busy !== ''} onClick={toggleBlock}>{blockedIds.includes(recipient) ? t('unblock') : t('block')}</button><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="key-fingerprints"><small>{t('yourChatKey')}: <code>{chatIdentity.fingerprint}</code></small><small>{t('contactChatKey')}: {recipientFingerprint ? <code>{recipientFingerprint}</code> : t('contactKeyMissing')}</small>{recipientFingerprint && verifiedRecipientFingerprint !== recipientFingerprint && <div className="verify-key"><p>{t('compareContactKey')}</p><button className="secondary" onClick={verifyRecipientKey}>{t('verifiedContactKey')}</button></div>}{recipientFingerprint && verifiedRecipientFingerprint === recipientFingerprint && <small className="verified-key">{t('contactKeyVerified')}</small>}</div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''} ${m.failed ? 'message-failed' : ''}`}><p>{m.failed ? m.text : renderMessageBody(m.text)}</p>{m.legacy && <small>{t('legacyMessage')}</small>}<small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={!recipientKey ? t('contactKeyMissing') : verifiedRecipientFingerprint !== recipientFingerprint ? t('verifyContactKeyFirst') : t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)} disabled={!recipientKey || verifiedRecipientFingerprint !== recipientFingerprint || blockedIds.includes(recipient)}/><button className="primary" disabled={busy !== '' || !messageText.trim() || !recipientKey || verifiedRecipientFingerprint !== recipientFingerprint || blockedIds.includes(recipient)} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>
+        </>}
+      </>}
       {tab === 'profile' && renderProfile()}
       {tab === 'post' && <div className="single-post">
         <button type="button" className="back-button" onClick={() => setTab('feed')}><ArrowLeft size={17}/> {t('backHome')}</button>
@@ -896,6 +1162,7 @@ export default function App() {
         <div className="form-actions-inline"><button className="secondary" onClick={() => { setShareTarget(null); setShareQuery(''); }}>{t('cancel')}</button></div>
       </div>
     </div>}
+    {reportTarget && <ReportDialog t={t} busy={busy !== ''} onCancel={() => setReportTarget(null)} onSubmit={submitReport}/>}
     {confirmBox && <ConfirmDialog message={confirmBox.message} confirmLabel={confirmBox.confirmLabel} cancelLabel={t('cancel')} onCancel={() => setConfirmBox(null)} onConfirm={() => { const run = confirmBox.onConfirm; setConfirmBox(null); run(); }}/>}
     {lightbox && <Lightbox t={t} urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))} index={lightbox.index} onIndex={index => setLightbox(prev => ({ ...prev, index }))} onClose={() => setLightbox(null)}/>}
   </div>;
