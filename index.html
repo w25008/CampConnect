@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CampConnect - Social Network App</title>
+    <script>
+      // Pick the theme before the page paints (same rule as src/theme.js).
+      try {
+        var saved = localStorage.getItem('campconnect_theme');
+        document.documentElement.dataset.theme = saved === 'light' || saved === 'dark' ? saved
+          : (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      } catch (e) { document.documentElement.dataset.theme = 'dark'; }
+    </script>
   </head>
   <body>
     <div id="root"></div>
