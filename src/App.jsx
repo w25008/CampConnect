@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Volume2, VolumeX } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
+import { initialSoundOn, saveSoundOn, unlockAudio, playSound } from './sounds.js';
 
 const MAX_POST = 500;
 const MAX_COMMENT = 300;
@@ -387,9 +388,39 @@ export default function App() {
   }, [userId, tab, query]);
   useEffect(() => {
     if (!userId) return undefined;
-    const timer = setInterval(() => { if (document.visibilityState === 'visible') { loadNotifications(); if (tab === 'messages') loadMessages(); } }, 15000);
+    // Keep checking for new activity in background tabs too, so sounds still play.
+    const timer = setInterval(() => { loadNotifications(); if (tab === 'messages' && document.visibilityState === 'visible') loadMessages(); }, 15000);
     return () => clearInterval(timer);
   }, [userId, tab, loadMessages, loadNotifications]);
+  // Notification sounds: play when a new message or a new post arrives since the last check.
+  const [soundOn, setSoundOn] = useState(initialSoundOn);
+  const known = useRef(null); // what was already there at the last check: { messages, posts }
+  useEffect(() => {
+    document.addEventListener('pointerdown', unlockAudio);
+    document.addEventListener('keydown', unlockAudio);
+    return () => { document.removeEventListener('pointerdown', unlockAudio); document.removeEventListener('keydown', unlockAudio); };
+  }, []);
+  useEffect(() => { known.current = null; }, [userId]);
+  useEffect(() => {
+    if (followers === null) return; // notifications haven't loaded yet
+    const messageKeys = incoming.map(m => `${m.sender_id}:${m.created_at}`);
+    const postKeys = activity.posts.map(p => p.id);
+    const before = known.current;
+    known.current = { messages: new Set(messageKeys), posts: new Set(postKeys) };
+    if (!before || !soundOn) return; // the first load after signing in is not "new"
+    // No ding for a chat I'm already looking at.
+    const watching = sender => tab === 'messages' && recipient === sender && document.visibilityState === 'visible';
+    const newMessage = incoming.some(m => !before.messages.has(`${m.sender_id}:${m.created_at}`) && !watching(m.sender_id));
+    const newPost = postKeys.some(id => !before.posts.has(id));
+    if (newMessage) playSound('message');
+    else if (newPost) playSound('post');
+  }, [incoming, activity, followers]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundOn(next); saveSoundOn(next);
+    if (next) { unlockAudio(); setTimeout(() => playSound('message'), 50); } // a preview so you hear what it sounds like
+    setFlash(next ? t('soundOnToast') : t('soundOffToast'));
+  };
   const unreadBySender = useMemo(() => {
     const counts = {};
     if (!seen) return counts;
@@ -426,6 +457,11 @@ export default function App() {
     return list.sort((a, b) => (b.at ? Date.parse(b.at) : 0) - (a.at ? Date.parse(a.at) : 0)).slice(0, 80);
   }, [activity, followers, seen]);
   const unreadNotifications = notifications.filter(n => n.unread).length;
+  // Show the unread total on the browser tab, e.g. "(3) CampConnect".
+  useEffect(() => {
+    const total = userId ? unreadNotifications + unreadMessages : 0;
+    document.title = total ? `(${total > 99 ? '99+' : total}) CampConnect` : 'CampConnect - Social Network App';
+  }, [userId, unreadNotifications, unreadMessages]);
   // Opening Notifications marks everything as read, but keeps the highlight until you leave the tab.
   useEffect(() => {
     if (tab !== 'notifications') { setFreshNotifs([]); return; }
@@ -816,7 +852,7 @@ export default function App() {
         const current = id === 'profile' ? tab === 'profile' && viewProfileId === userId : tab === id;
         return <button key={id} className={`nav-link ${current ? 'selected' : ''}`} aria-current={current ? 'page' : undefined} onClick={() => (id === 'profile' ? openProfile(userId) : setTab(id))}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>;
       })}</nav>
-      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div></div>
+      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/><button type="button" className="icon-button theme-toggle" onClick={toggleSound} aria-pressed={soundOn} aria-label={soundOn ? t('soundTurnOff') : t('soundTurnOn')} title={soundOn ? t('soundTurnOff') : t('soundTurnOn')}>{soundOn ? <Volume2 size={17}/> : <VolumeX size={17}/>}</button></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></header>
