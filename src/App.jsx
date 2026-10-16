@@ -36,7 +36,7 @@ function Auth({ notify }) {
     finally { setBusy(false); }
   }
   return <div className="auth-wrap"><div className="auth-card">
-    <div className="brand"><span className="brand-mark"><Sparkles size={20}/></span> CampConnect</div>
+    <div className="brand">CampConnect</div>
     <p className="eyebrow">A small space to connect</p><h1>{signup ? 'Create your account' : 'Welcome back'}</h1>
     <p className="muted">{signup ? 'Share thoughts and start conversations.' : 'Sign in to see your community.'}</p>
     <form className="stack-form" onSubmit={submit}>
@@ -334,7 +334,7 @@ export default function App() {
   if (!session) return <><Auth notify={setNotice}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><span className="brand-mark"><Sparkles size={20}/></span> CampConnect</div>
+      <div className="brand">CampConnect</div>
       <nav aria-label="Main navigation">{[['feed', Home, 'Home'], ['notifications', Bell, 'Notifications'], ['people', Users, 'People'], ['messages', Mail, 'Messages']].map(([id, Icon, label]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{label}{badges[id] > 0 && <span className="badge" aria-label={`${badges[id]} new`}>{badgeText(badges[id])}</span>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || 'loading'}</small></div></div><button className="icon-button" aria-label="Sign out" title="Sign out" onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div>
     </aside>
