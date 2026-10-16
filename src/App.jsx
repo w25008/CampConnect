@@ -117,6 +117,14 @@ export default function App() {
     });
     return () => { active = false; subscription.unsubscribe(); };
   }, []);
+  // Accounts made before the school-email rule (e.g. Gmail) are signed straight back out.
+  const rejectAccount = useCallback(async key => {
+    await supabase.auth.signOut();
+    setNotice(translate(langRef.current, key));
+  }, []);
+  useEffect(() => {
+    if (session && !isSchoolEmail(session.user?.email || '')) rejectAccount('errNotSchoolAccount');
+  }, [session, rejectAccount]);
   const loadCommunity = useCallback(async (spin = false) => {
     if (!userId) return;
     if (spin) setLoading(true);
@@ -138,13 +146,15 @@ export default function App() {
       ]);
       const secondError = [authorResult, countResult, likeResult].find(r => r.error);
       if (secondError) throw secondError.error;
+      // Every real member has a profile (created at sign-up). Without one, the account wasn't set up properly.
+      if (!(authorResult.data || []).some(p => p.id === userId)) { await rejectAccount('errNoProfile'); return; }
       const byId = new Map([...(recentProfiles.data || []), ...(authorResult.data || [])].map(p => [p.id, p]));
       setProfiles([...byId.values()]); setPosts(postRows);
       setCounts(countResult.data || []); setLikes(likeResult.data || []);
       setFollows(followResult.data || []); setError('');
     } catch (err) { setError(err.message || translate(langRef.current, 'errLoadCommunity')); }
     finally { if (spin) setLoading(false); }
-  }, [userId]);
+  }, [userId, rejectAccount]);
   const loadComments = useCallback(async postId => {
     setLoadingComments(prev => ({ ...prev, [postId]: true }));
     const { data, error: err } = await supabase.from('comments')
