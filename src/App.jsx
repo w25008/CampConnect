@@ -1,19 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
+import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
 
 const MAX_POST = 500;
 const MAX_COMMENT = 300;
 const MAX_MESSAGE = 1000;
+const MAX_IMAGES = 4; // per post (enforced in supabase/migrations/0006_post_editing.sql)
 // Only school accounts may join. The database enforces this too (supabase/migrations/0002_restrict_email_domain.sql).
 const SCHOOL_DOMAIN = 'osfl.ac.jp';
 const isSchoolEmail = value => value.trim().toLowerCase().endsWith(`@${SCHOOL_DOMAIN}`);
 const stamp = (value, lang) => new Date(value).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' });
 const snip = (text, max = 70) => (text.length > max ? `${text.slice(0, max).trimEnd()}...` : text);
 const display = profile => profile?.display_name || profile?.handle || 'Member';
-function Avatar({ profile, large }) { return <span className={`avatar ${large ? 'avatar-lg' : ''}`} aria-hidden="true">{display(profile).slice(0, 1).toUpperCase()}</span>; }
+function Avatar({ profile, large }) {
+  const [failed, setFailed] = useState('');
+  const className = `avatar ${large ? 'avatar-lg' : ''}`;
+  const path = profile?.avatar_path;
+  // Show the profile photo if there is one; fall back to the first letter if it can't load.
+  if (path && failed !== path) return <img className={className} src={publicUrl(AVATAR_BUCKET, path)} alt="" loading="lazy" onError={() => setFailed(path)}/>;
+  return <span className={className} aria-hidden="true">{display(profile).slice(0, 1).toUpperCase()}</span>;
+}
 // Birthdays are stored as YYYY-MM-DD; show only month and day, and avoid timezone shifts.
 const birthdayText = (value, lang) => {
   const [y, m, d] = value.split('-').map(Number);
@@ -25,6 +34,41 @@ const EMPTY_FORM = { display_name: '', handle: '', school: '', course: '', year:
 // A person's avatar and/or name, clickable to open their profile.
 function PersonLink({ onOpen, title, className = '', children }) {
   return <button type="button" className={`person-link ${className}`} onClick={onOpen} title={title}>{children}</button>;
+}
+function ConfirmDialog({ message, confirmLabel, cancelLabel, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+  return <div className="modal-backdrop" onClick={onCancel}>
+    <div className="modal panel" role="alertdialog" aria-modal="true" aria-label={message} onClick={e => e.stopPropagation()}>
+      <p>{message}</p>
+      <div className="form-actions-inline"><button className="secondary" autoFocus onClick={onCancel}>{cancelLabel}</button><button className="danger-button" onClick={onConfirm}>{confirmLabel}</button></div>
+    </div>
+  </div>;
+}
+function Lightbox({ t, urls, index, onIndex, onClose }) {
+  const many = urls.length > 1;
+  const go = step => onIndex((index + step + urls.length) % urls.length);
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === 'Escape') onClose();
+      if (many && e.key === 'ArrowRight') onIndex((index + 1) % urls.length);
+      if (many && e.key === 'ArrowLeft') onIndex((index - 1 + urls.length) % urls.length);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [index, many, urls.length, onIndex, onClose]);
+  return <div className="lightbox" role="dialog" aria-modal="true" aria-label={t('postImageAlt')} onClick={onClose}>
+    <img src={urls[index]} alt={t('postImageAlt')} onClick={e => e.stopPropagation()}/>
+    <button className="lightbox-btn close" onClick={onClose} aria-label={t('close')} title={t('close')}><X size={22}/></button>
+    {many && <>
+      <button className="lightbox-btn prev" onClick={e => { e.stopPropagation(); go(-1); }} aria-label={t('previousImage')} title={t('previousImage')}><ChevronLeft size={26}/></button>
+      <button className="lightbox-btn next" onClick={e => { e.stopPropagation(); go(1); }} aria-label={t('nextImage')} title={t('nextImage')}><ChevronRight size={26}/></button>
+      <span className="lightbox-count">{index + 1} / {urls.length}</span>
+    </>}
+  </div>;
 }
 function ThemeToggle({ t, theme, onToggle }) {
   const label = theme === 'dark' ? t('lightMode') : t('darkMode');
@@ -102,6 +146,22 @@ export default function App() {
   const [recipient, setRecipient] = useState('');
   const [query, setQuery] = useState('');
   const [postText, setPostText] = useState('');
+  const [postImages, setPostImages] = useState([]); // [{ file, preview }] picked in the composer
+  const postImageInput = useRef(null);
+  const editImageInput = useRef(null);
+  const [menuPost, setMenuPost] = useState(''); // post whose ⋯ menu is open
+  const [editingPost, setEditingPost] = useState(null); // { id, body, keep, added, original }
+  const [confirmBox, setConfirmBox] = useState(null); // { message, confirmLabel, onConfirm }
+  const [lightbox, setLightbox] = useState(null); // { paths, index }
+  // Our own confirm dialog: the browser's confirm() is blocked in some browsers.
+  const askConfirm = (message, confirmLabel, onConfirm) => setConfirmBox({ message, confirmLabel, onConfirm });
+  useEffect(() => {
+    if (!menuPost) return undefined;
+    const close = () => setMenuPost('');
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [menuPost]);
+  const avatarInput = useRef(null);
   const [messageText, setMessageText] = useState('');
   const [commentText, setCommentText] = useState({});
   const [openComments, setOpenComments] = useState({});
@@ -162,8 +222,8 @@ export default function App() {
     if (spin) setLoading(true);
     try {
       const [postResult, recentProfiles, followResult] = await Promise.all([
-        supabase.from('posts').select('id,author_id,body,created_at').order('created_at', { ascending: false }).limit(100),
-        supabase.from('profiles').select('id,handle,display_name,created_at').order('created_at', { ascending: false }).limit(50),
+        supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(100),
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }).limit(50),
         supabase.from('follows').select('follower_id,following_id').eq('follower_id', userId),
       ]);
       const firstError = [postResult, recentProfiles, followResult].find(r => r.error);
@@ -172,7 +232,7 @@ export default function App() {
       const ids = postRows.map(p => p.id);
       const authorIds = [...new Set([...postRows.map(p => p.author_id), userId])];
       const [authorResult, countResult, likeResult] = await Promise.all([
-        supabase.from('profiles').select('id,handle,display_name,created_at').in('id', authorIds),
+        supabase.from('profiles').select('*').in('id', authorIds),
         ids.length ? supabase.from('post_counts').select('post_id,like_count,comment_count').in('post_id', ids) : Promise.resolve({ data: [], error: null }),
         ids.length ? supabase.from('likes').select('post_id,user_id').eq('user_id', userId).in('post_id', ids) : Promise.resolve({ data: [], error: null }),
       ]);
@@ -199,7 +259,7 @@ export default function App() {
       const authorIds = [...new Set(rows.map(c => c.author_id))];
       if (authorIds.length) {
         const { data: authors, error: authorError } = await supabase.from('profiles')
-          .select('id,handle,display_name,created_at').in('id', authorIds);
+          .select('*').in('id', authorIds);
         if (authorError) setError(authorError.message);
         else setProfiles(prev => [...new Map([...prev, ...(authors || [])].map(p => [p.id, p])).values()]);
       }
@@ -221,7 +281,7 @@ export default function App() {
     const requestId = ++profileRequest.current;
     const [profileResult, postResult, followerResult, followingResult] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', id).maybeSingle(),
-      supabase.from('posts').select('id,author_id,body,created_at').eq('author_id', id).order('created_at', { ascending: false }).limit(50),
+      supabase.from('posts').select('*').eq('author_id', id).order('created_at', { ascending: false }).limit(50),
       supabase.from('follows').select('follower_id', { count: 'exact', head: true }).eq('following_id', id),
       supabase.from('follows').select('following_id', { count: 'exact', head: true }).eq('follower_id', id),
     ]);
@@ -251,7 +311,7 @@ export default function App() {
       // Likes and comments on my posts (the !inner join keeps only rows whose post I wrote).
       supabase.from('likes').select('post_id,user_id,posts!inner(author_id,body)').eq('posts.author_id', userId).neq('user_id', userId).limit(500),
       supabase.from('comments').select('id,post_id,author_id,body,created_at,posts!inner(author_id)').eq('posts.author_id', userId).neq('author_id', userId).order('created_at', { ascending: false }).limit(100),
-      supabase.from('posts').select('id,author_id,body,created_at').neq('author_id', userId).order('created_at', { ascending: false }).limit(50),
+      supabase.from('posts').select('*').neq('author_id', userId).order('created_at', { ascending: false }).limit(50),
     ]);
     const failed = [followerResult, inboxResult, likeResult, commentResult, postResult].find(r => r.error);
     if (failed) { setError(failed.error.message); return; }
@@ -271,7 +331,7 @@ export default function App() {
     });
     const peopleIds = [...new Set([...followerIds, ...inbox.map(m => m.sender_id), ...likeRows.map(l => l.user_id), ...(commentResult.data || []).map(c => c.author_id), ...(postResult.data || []).map(p => p.author_id)])];
     if (peopleIds.length) {
-      const { data, error: err } = await supabase.from('profiles').select('id,handle,display_name,created_at').in('id', peopleIds);
+      const { data, error: err } = await supabase.from('profiles').select('*').in('id', peopleIds);
       if (!err) setNotifyProfiles(data || []);
     }
   }, [userId]);
@@ -305,7 +365,7 @@ export default function App() {
       const term = query.trim().replace(/[^a-zA-Z0-9_ ]/g, '');
       if (!term) { if (!cancelled) { setSearchResults([]); setSearching(false); } return; }
       const { data, error: searchError } = await supabase.from('profiles')
-        .select('id,handle,display_name,created_at')
+        .select('*')
         .or(`handle.ilike.%${term}%,display_name.ilike.%${term}%`)
         .order('created_at', { ascending: false }).limit(50);
       if (!cancelled) {
@@ -388,10 +448,107 @@ export default function App() {
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
   }
-  function publish(e) {
+  // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
+  const imageErrorText = err => (/bucket not found|image_path|avatar_path|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errImageSetup') : err?.message || t('errAction'));
+  const editErrorText = err => (/image_paths|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errEditSetup') : imageErrorText(err));
+  // Turn picked files into previews, keeping the total at MAX_IMAGES.
+  function pickImages(e, existingCount, add) {
+    const files = [...(e.target.files || [])]; e.target.value = '';
+    if (!files.length) return;
+    if (files.some(f => !isImageFile(f))) { setError(t('errImageType')); return; }
+    const room = MAX_IMAGES - existingCount;
+    if (files.length > room) setError(t('imagesLimit', { n: MAX_IMAGES }));
+    if (room > 0) add(files.slice(0, room).map(file => ({ file, preview: URL.createObjectURL(file) })));
+  }
+  const dropPreviews = items => items.forEach(item => URL.revokeObjectURL(item.preview));
+  const removePostImage = index => setPostImages(prev => { dropPreviews([prev[index]]); return prev.filter((_, i) => i !== index); });
+  async function uploadPostImages(items) {
+    const paths = [];
+    try {
+      for (const item of items) paths.push(await uploadImage(POST_IMAGE_BUCKET, userId, await shrinkImage(item.file, 1600)));
+      return paths;
+    } catch (err) { await removeImages(POST_IMAGE_BUCKET, paths); throw err; }
+  }
+  async function publish(e) {
     e.preventDefault(); const body = postText.trim();
-    if (!body || body.length > MAX_POST) return;
-    mutate('post', () => supabase.from('posts').insert({ author_id: userId, body }), () => setPostText(''));
+    if ((!body && !postImages.length) || body.length > MAX_POST) return;
+    setBusy('post'); setError('');
+    let paths = [];
+    try {
+      paths = await uploadPostImages(postImages);
+      let { error: err } = await supabase.from('posts').insert(paths.length ? { author_id: userId, body, image_paths: paths } : { author_id: userId, body });
+      // Before 0006 there is only the single image_path column; a one-image post still works then.
+      if (err?.code === 'PGRST204' && paths.length === 1) ({ error: err } = await supabase.from('posts').insert({ author_id: userId, body, image_path: paths[0] }));
+      if (err) throw err;
+      setPostText(''); dropPreviews(postImages); setPostImages([]);
+      await loadCommunity();
+    } catch (err) {
+      await removeImages(POST_IMAGE_BUCKET, paths); // don't leave orphaned files behind
+      setError(paths.length > 1 ? editErrorText(err) : imageErrorText(err));
+    } finally { setBusy(''); }
+  }
+  const deletePost = post => mutate('delete', async () => {
+    const result = await supabase.from('posts').delete().eq('id', post.id);
+    if (!result.error) await removeImages(POST_IMAGE_BUCKET, postImagePaths(post));
+    return result;
+  });
+  function startEditPost(post) {
+    setMenuPost('');
+    setEditingPost({ id: post.id, body: post.body || '', keep: postImagePaths(post), added: [], original: postImagePaths(post) });
+  }
+  function cancelEditPost() {
+    if (editingPost) dropPreviews(editingPost.added);
+    setEditingPost(null);
+  }
+  async function saveEditPost(e) {
+    e.preventDefault();
+    const { id, keep, added, original } = editingPost;
+    const body = editingPost.body.trim();
+    if ((!body && !keep.length && !added.length) || body.length > MAX_POST) return;
+    setBusy('edit'); setError('');
+    let newPaths = [];
+    try {
+      newPaths = await uploadPostImages(added);
+      const { data, error: err } = await supabase.from('posts').update({ body, image_paths: [...keep, ...newPaths], image_path: null }).eq('id', id).select('id');
+      if (err) throw err;
+      if (!data?.length) throw { code: '42501' }; // no row changed: editing isn't allowed yet (0006 not run)
+      await removeImages(POST_IMAGE_BUCKET, original.filter(p => !keep.includes(p)));
+      dropPreviews(added); setEditingPost(null);
+      await loadCommunity();
+      if (tab === 'profile' && viewProfileId) await loadProfile(viewProfileId);
+    } catch (err) {
+      await removeImages(POST_IMAGE_BUCKET, newPaths);
+      setError(editErrorText(err));
+    } finally { setBusy(''); }
+  }
+  async function changeAvatar(e) {
+    const file = e.target.files?.[0]; e.target.value = '';
+    if (!file) return;
+    if (!isImageFile(file)) { setError(t('errImageType')); return; }
+    const oldPath = profileView.data?.avatar_path;
+    setBusy('photo'); setError('');
+    let newPath = null;
+    try {
+      newPath = await uploadImage(AVATAR_BUCKET, userId, await shrinkImage(file, 512, true));
+      const { error: err } = await supabase.from('profiles').update({ avatar_path: newPath }).eq('id', userId);
+      if (err) throw err;
+      if (oldPath) removeImage(AVATAR_BUCKET, oldPath);
+      setFlash(t('photoUpdated'));
+      await Promise.all([loadProfile(userId), loadCommunity()]);
+    } catch (err) {
+      if (newPath) removeImage(AVATAR_BUCKET, newPath);
+      setError(imageErrorText(err));
+    } finally { setBusy(''); }
+  }
+  async function removeAvatar() {
+    const oldPath = profileView.data?.avatar_path;
+    if (!oldPath) return;
+    setBusy('photo'); setError('');
+    const { error: err } = await supabase.from('profiles').update({ avatar_path: null }).eq('id', userId);
+    setBusy('');
+    if (err) { setError(imageErrorText(err)); return; }
+    removeImage(AVATAR_BUCKET, oldPath);
+    await Promise.all([loadProfile(userId), loadCommunity()]);
   }
   function addComment(e, id) {
     e.preventDefault(); const body = (commentText[id] || '').trim();
@@ -469,9 +626,33 @@ export default function App() {
     const count = counts.find(c => c.post_id === post.id);
     const liked = likes.some(l => l.post_id === post.id);
     const postComments = commentsByPost[post.id] || [];
+    const images = postImagePaths(post);
+    const editing = editingPost?.id === post.id;
     return <article className="post panel" key={post.id} id={`post-${post.id}`}>
-      <div className="post-top"><PersonLink {...linkProps(post.author_id)} className="post-person"><Avatar profile={author}/><span className="post-author"><strong>{display(author)}</strong><small>@{author?.handle || 'member'} - {when(post.created_at)}</small></span></PersonLink>{post.author_id === userId && <button className="icon-button danger" title={t('deletePost')} aria-label={t('deletePost')} disabled={busy !== ''} onClick={() => { if (window.confirm(t('confirmDelete'))) mutate('delete', () => supabase.from('posts').delete().eq('id', post.id)); }}><Trash2 size={17}/></button>}</div>
-      <p className="post-body">{post.body}</p>
+      <div className="post-top"><PersonLink {...linkProps(post.author_id)} className="post-person"><Avatar profile={author}/><span className="post-author"><strong>{display(author)}</strong><small>@{author?.handle || 'member'} - {when(post.created_at)}{post.edited_at && ` · ${t('edited')}`}</small></span></PersonLink>
+        {post.author_id === userId && !editing && <div className="post-menu">
+          <button className="icon-button" aria-label={t('postOptions')} title={t('postOptions')} aria-haspopup="menu" aria-expanded={menuPost === post.id} disabled={busy !== ''} onClick={e => { e.stopPropagation(); setMenuPost(menuPost === post.id ? '' : post.id); }}><MoreHorizontal size={19}/></button>
+          {menuPost === post.id && <div className="menu panel" role="menu">
+            <button role="menuitem" onClick={() => startEditPost(post)}><Pencil size={16}/> {t('editPost')}</button>
+            <button role="menuitem" className="danger-text" onClick={() => { setMenuPost(''); askConfirm(t('confirmDelete'), t('deletePost'), () => deletePost(post)); }}><Trash2 size={16}/> {t('deletePost')}</button>
+          </div>}
+        </div>}
+      </div>
+      {editing ? <form className="post-edit" onSubmit={saveEditPost}>
+        <textarea aria-label={t('editPost')} value={editingPost.body} maxLength={MAX_POST} rows={3} onChange={e => setEditingPost(prev => ({ ...prev, body: e.target.value }))}/>
+        {(editingPost.keep.length + editingPost.added.length) > 0 && <div className="image-previews">
+          {editingPost.keep.map(p => <div className="image-preview" key={p}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt=""/><button type="button" className="preview-remove" aria-label={t('removeImage')} title={t('removeImage')} onClick={() => setEditingPost(prev => ({ ...prev, keep: prev.keep.filter(k => k !== p) }))}><X size={15}/></button></div>)}
+          {editingPost.added.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" aria-label={t('removeImage')} title={t('removeImage')} onClick={() => setEditingPost(prev => { dropPreviews([item]); return { ...prev, added: prev.added.filter((_, j) => j !== i) }; })}><X size={15}/></button></div>)}
+        </div>}
+        <div className="composer-footer"><div className="composer-tools">
+          <button type="button" className="icon-button" disabled={busy !== '' || editingPost.keep.length + editingPost.added.length >= MAX_IMAGES} onClick={() => editImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button>
+          <input ref={editImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, editingPost.keep.length + editingPost.added.length, items => setEditingPost(prev => ({ ...prev, added: [...prev.added, ...items] })))}/>
+          <small>{editingPost.body.length}/{MAX_POST}</small>
+        </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy === 'edit'} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
+      </form> : <>
+        {post.body && <p className="post-body">{post.body}</p>}
+        {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
+      </>}
       <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button></div>
       {openComments[post.id] && <div className="comments"><h3>{t('comments')}</h3>{loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}{postComments.map(c => <div className="comment" key={c.id}><PersonLink {...linkProps(c.author_id)}><Avatar profile={profileMap.get(c.author_id)}/></PersonLink><div><PersonLink {...linkProps(c.author_id)}><strong>{display(profileMap.get(c.author_id))}</strong></PersonLink><small> - {when(c.created_at)}</small><p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label={t('sendComment')}><Send size={16}/></button></form></div>}
     </article>;
@@ -490,10 +671,14 @@ export default function App() {
       [MapPin, t('hometown'), p.hometown],
     ].filter(([, , value]) => value);
     return <div className="profile-page">
+      {isMe && <input ref={avatarInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={changeAvatar}/>}
       <section className="profile-card panel">
         <div className="profile-cover"/>
         <div className="profile-head">
-          <Avatar profile={p} large/>
+          <div className={`avatar-wrap ${busy === 'photo' ? 'uploading' : ''}`}>
+            <Avatar profile={p} large/>
+            {isMe && <button type="button" className="avatar-edit" disabled={busy !== ''} onClick={() => avatarInput.current?.click()} aria-label={p.avatar_path ? t('changePhoto') : t('addPhoto')} title={p.avatar_path ? t('changePhoto') : t('addPhoto')}><Camera size={16}/></button>}
+          </div>
           <div className="profile-actions">
             {isMe
               ? !editing && <button className="secondary" onClick={startEdit}><Pencil size={16}/> {t('editProfile')}</button>
@@ -509,6 +694,7 @@ export default function App() {
       </section>
       {isMe && editing && <form className="profile-form panel" onSubmit={saveProfile}>
         <h2>{t('editProfile')}</h2>
+        <div className="photo-row"><Avatar profile={p}/><button type="button" className="secondary" disabled={busy !== ''} onClick={() => avatarInput.current?.click()}><Camera size={16}/> {busy === 'photo' ? t('uploading') : p.avatar_path ? t('changePhoto') : t('addPhoto')}</button>{p.avatar_path && <button type="button" className="text-button danger-text" disabled={busy !== ''} onClick={() => askConfirm(t('confirmRemovePhoto'), t('removePhoto'), removeAvatar)}>{t('removePhoto')}</button>}</div>
         <div className="form-grid">
           <label>{t('displayName')}<input required maxLength={60} value={form.display_name} onChange={setField('display_name')}/></label>
           <label>{t('username')}<input required minLength={3} maxLength={34} value={form.handle} onChange={e => setForm(prev => ({ ...prev, handle: e.target.value.toLowerCase() }))}/></label>
@@ -546,7 +732,7 @@ export default function App() {
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>
-        <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/><div className="composer-footer"><small>{postText.length}/{MAX_POST}</small><button className="primary" disabled={busy !== '' || !postText.trim()}><Send size={16}/> {t('post')}</button></div></form>
+        <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/>{postImages.length > 0 && <div className="image-previews">{postImages.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" onClick={() => removePostImage(i)} disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')}><X size={15}/></button></div>)}</div>}<div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-button" disabled={busy !== '' || postImages.length >= MAX_IMAGES} onClick={() => postImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button><input ref={postImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, postImages.length, items => setPostImages(prev => [...prev, ...items]))}/><small>{postText.length}/{MAX_POST}{postImages.length > 0 && ` · ${t('imageCount', { n: postImages.length, max: MAX_IMAGES })}`}</small></div><button className="primary" disabled={busy !== '' || (!postText.trim() && !postImages.length)}><Send size={16}/> {busy === 'post' ? t('uploading') : t('post')}</button></div></form>
         <div className="section-heading"><h2>{t('latestPosts')}</h2>{loading && <span>{t('loading')}</span>}</div>
         {!loading && posts.length === 0 && <div className="empty panel">{t('noPosts')}</div>}
         {posts.map(renderPost)}
@@ -570,6 +756,8 @@ export default function App() {
       {tab === 'profile' && renderProfile()}
     </main>
     {flash && <div className="toast" role="status">{flash}</div>}
+    {confirmBox && <ConfirmDialog message={confirmBox.message} confirmLabel={confirmBox.confirmLabel} cancelLabel={t('cancel')} onCancel={() => setConfirmBox(null)} onConfirm={() => { const run = confirmBox.onConfirm; setConfirmBox(null); run(); }}/>}
+    {lightbox && <Lightbox t={t} urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))} index={lightbox.index} onIndex={index => setLightbox(prev => ({ ...prev, index }))} onClose={() => setLightbox(null)}/>}
   </div>;
 }
 
