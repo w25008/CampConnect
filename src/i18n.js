@@ -1,8 +1,7 @@
 // All user-facing text in English and Japanese. Use {name} placeholders for values filled in at runtime.
 const STRINGS = {
   en: {
-    switchTo: '日本語',
-    switchLabel: 'Switch language to Japanese',
+    language: 'Language',
     // Sign in / sign up
     tagline: 'A website just for Gaigo and IT College students',
     createAccountTitle: 'Create your account',
@@ -88,8 +87,7 @@ const STRINGS = {
     errMessage: 'Message could not be sent.',
   },
   ja: {
-    switchTo: 'English',
-    switchLabel: '言語を英語に切り替える',
+    language: '言語',
     tagline: 'GaigoとITCollege学生だけ向けのウェブサイト',
     createAccountTitle: 'アカウント作成',
     signupSubtitle: '思いをシェアして、会話を始めよう。',

@@ -13,9 +13,13 @@ const stamp = (value, lang) => new Date(value).toLocaleString(lang === 'ja' ? 'j
 const snip = (text, max = 70) => (text.length > max ? `${text.slice(0, max).trimEnd()}...` : text);
 const display = profile => profile?.display_name || profile?.handle || 'Member';
 function Avatar({ profile }) { return <span className="avatar" aria-hidden="true">{display(profile).slice(0, 1).toUpperCase()}</span>; }
-function LangToggle({ t, onToggle }) { return <button type="button" className="lang-toggle" onClick={onToggle} aria-label={t('switchLabel')} title={t('switchLabel')}>{t('switchTo')}</button>; }
+function LangToggle({ t, lang, onChange }) {
+  return <div className="lang-switch" role="group" aria-label={t('language')}>
+    {[['en', 'EN'], ['ja', '日本語']].map(([code, label]) => <button key={code} type="button" lang={code} className={lang === code ? 'active' : ''} aria-pressed={lang === code} onClick={() => onChange(code)}>{label}</button>)}
+  </div>;
+}
 
-function Auth({ notify, t, onToggleLang }) {
+function Auth({ notify, t, lang, onChangeLang }) {
   const [signup, setSignup] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -49,7 +53,7 @@ function Auth({ notify, t, onToggleLang }) {
     finally { setBusy(false); }
   }
   return <div className="auth-wrap"><div className="auth-card">
-    <div className="auth-top"><div className="brand">CampConnect</div><LangToggle t={t} onToggle={onToggleLang}/></div>
+    <div className="auth-top"><div className="brand">CampConnect</div><LangToggle t={t} lang={lang} onChange={onChangeLang}/></div>
     <h1>{signup ? t('createAccountTitle') : t('tagline')}</h1>
     {signup && <p className="muted">{t('signupSubtitle')}</p>}
     <form className="stack-form" onSubmit={submit}>
@@ -101,7 +105,7 @@ export default function App() {
   const when = value => stamp(value, lang);
   const langRef = useRef(lang);
   langRef.current = lang;
-  const toggleLang = () => setLang(prev => { const next = prev === 'en' ? 'ja' : 'en'; saveLang(next); return next; });
+  const changeLang = next => { setLang(next); saveLang(next); };
   useEffect(() => { document.documentElement.lang = lang; }, [lang]);
   const userId = session?.user?.id;
   const messageRequest = useRef(0);
@@ -362,12 +366,12 @@ export default function App() {
   const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), messages: t('navMessages') };
   if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>{t('connectDbTitle')}</h1><p className="muted">{t('connectDbBody')}</p></div></div>;
   if (checking) return <div className="center-state">{t('loadingApp')}</div>;
-  if (!session) return <><Auth notify={setNotice} t={t} onToggleLang={toggleLang}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
+  if (!session) return <><Auth notify={setNotice} t={t} lang={lang} onChangeLang={changeLang}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand">CampConnect</div>
       <nav aria-label={t('mainNav')}>{[['feed', Home], ['notifications', Bell], ['people', Users], ['messages', Mail]].map(([id, Icon]) => <button key={id} className={`nav-link ${tab === id ? 'selected' : ''}`} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></div><LangToggle t={t} onToggle={toggleLang}/><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div>
+      <div className="sidebar-bottom"><LangToggle t={t} lang={lang} onChange={changeLang}/><div className="account-row"><div className="account"><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></div><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{navTitles[tab]}</h1></div><button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); }}><RefreshCw size={19}/></button></header>
