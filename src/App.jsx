@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
@@ -24,7 +24,7 @@ function Avatar({ profile, large }) {
   const path = profile?.avatar_path;
   // Show the profile photo if there is one; fall back to the first letter if it can't load.
   if (path && failed !== path) return <img className={className} src={publicUrl(AVATAR_BUCKET, path)} alt="" loading="lazy" onError={() => setFailed(path)}/>;
-  return <span className={className} aria-hidden="true">{display(profile).slice(0, 1).toUpperCase()}</span>;
+  return <span className={className} aria-hidden="true"><User/></span>;
 }
 // Birthdays are stored as YYYY-MM-DD; show only month and day, and avoid timezone shifts.
 const birthdayText = (value, lang) => {
@@ -159,6 +159,11 @@ export default function App() {
   const [groupMembers, setGroupMembers] = useState([]);
   const [activeGroup, setActiveGroup] = useState('');
   const [groupEditName, setGroupEditName] = useState(null);
+  const [boardText, setBoardText] = useState('');
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [groupView, setGroupView] = useState('list'); // phones show the list or one thread
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const threadRef = useRef(null);
   const [groupName, setGroupName] = useState('');
   const [memberQuery, setMemberQuery] = useState('');
   const [memberMatches, setMemberMatches] = useState([]);
@@ -491,7 +496,7 @@ export default function App() {
   useEffect(() => {
     if (!userId) return undefined;
     // Keep checking for new activity in background tabs too, so sounds still play.
-    const timer = setInterval(() => { loadNotifications(); if (tab === 'messages' && document.visibilityState === 'visible') loadMessages(); }, 15000);
+    const timer = setInterval(() => { loadNotifications(); if (document.visibilityState === 'visible') { if (tab === 'messages') loadMessages(); if (tab === 'groups') loadCommunity(); } }, 15000);
     return () => clearInterval(timer);
   }, [userId, tab, loadMessages, loadNotifications]);
   // Notification sounds: play when something new arrives since the last check —
@@ -647,6 +652,19 @@ export default function App() {
       setError(paths.length > 1 ? editErrorText(err) : imageErrorText(err));
     } finally { setBusy(''); }
   }
+  async function postToBoard(e) {
+    e.preventDefault(); const body = boardText.trim();
+    if (!body || body.length > MAX_POST || !currentGroup) return;
+    setBusy('board'); setError('');
+    try {
+      const { error: err } = await supabase.rpc('create_audience_post', {
+        p_body: body, p_audience: 'group', p_user_ids: null, p_group_id: currentGroup.id, p_image_paths: [],
+      });
+      if (err) throw err;
+      setBoardText(''); await loadCommunity();
+    } catch (err) { setError(err.message || t('errAction')); }
+    finally { setBusy(''); }
+  }
   async function createGroup(e) {
     e.preventDefault();
     if (!groupName.trim()) return;
@@ -654,7 +672,7 @@ export default function App() {
     try {
       const { data, error: err } = await supabase.rpc('create_student_group', { p_name: groupName.trim() });
       if (err) throw err;
-      setGroupName(''); setActiveGroup(data);
+      setGroupName(''); setShowCreateGroup(false); setActiveGroup(data); setGroupView('thread');
       await loadCommunity();
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
@@ -1066,6 +1084,10 @@ export default function App() {
   }
   const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), groups: t('navGroups'), messages: t('navMessages'), profile: t('navProfile'), post: t('postTitle') };
   const currentGroup = groups.find(group => group.id === activeGroup) || groups[0];
+  const groupPosts = currentGroup ? posts.filter(post => post.audience === 'group' && post.group_id === currentGroup.id).sort((a, b) => new Date(a.created_at) - new Date(b.created_at)) : [];
+  const lastGroupPost = groupId => posts.filter(post => post.audience === 'group' && post.group_id === groupId).reduce((best, post) => (!best || new Date(post.created_at) > new Date(best.created_at) ? post : best), null);
+  const sortedGroups = [...groups].sort((a, b) => new Date(lastGroupPost(b.id)?.created_at || b.created_at) - new Date(lastGroupPost(a.id)?.created_at || a.created_at));
+  useEffect(() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; }, [currentGroup?.id, groupPosts.length, tab, groupView]);
   const currentGroupMembers = currentGroup ? groupMembers.filter(member => member.group_id === currentGroup.id) : [];
   const viewingOther = tab === 'profile' && viewProfileId && viewProfileId !== userId;
   // "Sent" / "Seen" is shown under my most recent message only, like most chat apps.
@@ -1088,7 +1110,7 @@ export default function App() {
       <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></header>
+      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>
         <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/><div className="audience-inline"><select aria-label={t('postAudience')} value={postAudience} onChange={e => { const next = e.target.value; if (next !== 'school') { dropPreviews(postImages); setPostImages([]); } setPostAudience(next); }}><option value="school">{t('audienceSchool')}</option><option value="selected">{t('audienceSelected')}</option><option value="group">{t('audienceGroup')}</option></select>
@@ -1118,26 +1140,60 @@ export default function App() {
         })}
       </div>}
       {tab === 'people' && <div className="people-section"><label className="search-box"><Search size={19}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder={t('searchPeople')} aria-label={t('searchPeople')}/></label><div className="section-heading"><h2>{t('members')}</h2><span>{searching ? t('searching') : filtered.length}</span></div>{filtered.length === 0 && <div className="empty panel">{query ? t('noMatch') : t('noMembers')}</div>}{filtered.map(p => <div className="member panel" key={p.id}><PersonLink {...linkProps(p.id)} className="member-person"><Avatar profile={p}/><span className="member-info"><strong>{display(p)}</strong><small>@{p.handle}</small>{newFollowerIds.includes(p.id) ? <span className="tag new">{t('newFollower')}</span> : followerIds.has(p.id) && <span className="tag">{t('followsYou')}</span>}</span></PersonLink><div className="member-actions"><button className="secondary" disabled={busy !== ''} onClick={() => toggleFollow(p.id)}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? t('following') : t('follow')}</button><button className="secondary" onClick={() => openConversation(p)}><Mail size={16}/> {t('message')}</button></div></div>)}</div>}
-      {tab === 'groups' && <div className="groups-page">
+      {tab === 'groups' && <div className="groups-layout" data-view={groupView}>
         <input ref={groupAvatarInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={changeGroupAvatar}/>
-        <form className="panel group-create" onSubmit={createGroup}>
-          <h2>{t('createGroup')}</h2>
-          <div className="group-create-row"><input aria-label={t('groupName')} maxLength={80} value={groupName} onChange={e => setGroupName(e.target.value)} placeholder={t('groupName')}/><button className="primary" disabled={busy !== '' || !groupName.trim()}><UserPlus size={16}/>{t('createGroup')}</button></div>
-        </form>
-        {groups.length === 0 ? <div className="empty panel">{t('noGroups')}</div> : <>
-          <div className="group-picker" role="group" aria-label={t('yourGroups')}>{groups.map(group => <button type="button" key={group.id} className={currentGroup?.id === group.id ? 'secondary selected' : 'secondary'} onClick={() => setActiveGroup(group.id)}>{group.name}</button>)}</div>
-          {currentGroup && <section className="panel group-detail">
+        <aside className="group-list-pane panel" aria-label={t('yourGroups')}>
+          {(showCreateGroup || groups.length === 0) && <form className="group-create-row" onSubmit={createGroup}><input aria-label={t('groupName')} maxLength={80} value={groupName} onChange={e => setGroupName(e.target.value)} placeholder={t('groupName')}/><button className="primary" disabled={busy !== '' || !groupName.trim()} aria-label={t('createGroup')}><Check size={16}/></button></form>}
+          <div className="group-rows">
+            {groups.length === 0 && <p className="muted">{t('noGroups')}</p>}
+            {sortedGroups.map(group => { const last = lastGroupPost(group.id); const author = last && profileMap.get(last.author_id);
+              return <button type="button" key={group.id} className={`group-row ${currentGroup?.id === group.id ? 'selected' : ''}`} onClick={() => { setActiveGroup(group.id); setGroupView('thread'); }}>
+                <Avatar profile={{ display_name: group.name, avatar_path: group.avatar_path }}/>
+                <span className="group-row-text"><strong>{group.name}</strong><small>{last ? `${last.author_id === userId ? t('you') : display(author)}: ${snip(last.body || '', 40)}` : t('noGroupPostsShort')}</small></span>
+                {last && <small className="group-row-time">{when(last.created_at)}</small>}
+              </button>; })}
+          </div>
+        </aside>
+        <section className="group-thread panel" aria-label={t('groupPosts')}>
+          {!currentGroup ? <div className="empty-message"><UsersRound size={28}/><p>{t('noGroups')}</p></div> : <>
+            <div className="group-thread-head">
+              <button type="button" className="icon-button group-back" aria-label={t('back')} title={t('back')} onClick={() => setGroupView('list')}><ArrowLeft size={19}/></button>
+              <button type="button" className="group-head-info" onClick={() => setShowGroupInfo(true)} aria-label={t('groupInfo')}>
+                <Avatar profile={{ display_name: currentGroup.name, avatar_path: currentGroup.avatar_path }}/>
+                <span><strong>{currentGroup.name}</strong><small>{t('memberCount', { n: currentGroupMembers.length })}</small></span>
+              </button>
+              <button type="button" className="icon-button" aria-label={t('groupInfo')} title={t('groupInfo')} onClick={() => setShowGroupInfo(true)}><Info size={19}/></button>
+            </div>
+            <div className="message-list group-thread-list" ref={threadRef} aria-live="polite">
+              {groupPosts.length === 0 && <div className="empty-message">{t('noGroupPosts')}</div>}
+              {groupPosts.map(post => { const mine = post.author_id === userId; const author = profileMap.get(post.author_id);
+                return <div key={post.id} className={`message-row ${mine ? 'mine' : ''}`} id={`post-${post.id}`}>
+                  {!mine && <small className="group-sender"><Avatar profile={author}/> {display(author)}</small>}
+                  <div className={`message ${mine ? 'mine' : ''}`}><p>{renderMessageBody(post.body)}</p>{postImagePaths(post).length > 0 && <div className="group-bubble-images">{postImagePaths(post).map(img => <img key={img} src={publicUrl(POST_IMAGE_BUCKET, img)} alt={t('postImageAlt')}/>)}</div>}
+                    <small>{when(post.created_at)}{post.edited_at && ` · ${t('edited')}`}</small></div>
+                  <div className="group-bubble-actions">{mine
+                    ? <button type="button" className="icon-button" aria-label={t('deletePost')} title={t('deletePost')} disabled={busy !== ''} onClick={() => askConfirm(t('confirmDelete'), t('deletePost'), () => deletePost(post))}><Trash2 size={13}/></button>
+                    : <button type="button" className="icon-button" aria-label={t('reportPost')} title={t('reportPost')} onClick={() => setReportTarget({ type: 'post', id: post.id })}><Flag size={13}/></button>}</div>
+                </div>; })}
+            </div>
+            <form className="message-form" onSubmit={postToBoard}>
+              <input aria-label={t('groupBoardPlaceholder', { name: currentGroup.name })} placeholder={t('groupBoardPlaceholder', { name: currentGroup.name })} maxLength={MAX_POST} value={boardText} onChange={e => setBoardText(e.target.value)}/>
+              <button className="primary" disabled={busy !== '' || !boardText.trim()} aria-label={t('post')}><Send size={17}/></button>
+            </form>
+          </>}
+        </section>
+        {showGroupInfo && currentGroup && <div className="modal-backdrop" onClick={() => { setShowGroupInfo(false); setGroupEditName(null); }}>
+          <section className="modal panel group-info" role="dialog" aria-modal="true" aria-label={t('groupInfo')} onClick={e => e.stopPropagation()}>
+            <div className="group-info-head"><h2>{t('groupInfo')}</h2><button type="button" className="icon-button" aria-label={t('cancel')} onClick={() => { setShowGroupInfo(false); setGroupEditName(null); }}><X size={18}/></button></div>
             {groupEditName !== null && currentGroup.owner_id === userId
               ? <form className="group-rename" onSubmit={renameGroup}><input aria-label={t('groupName')} maxLength={80} value={groupEditName} onChange={e => setGroupEditName(e.target.value)} autoFocus/><button className="primary" disabled={busy !== '' || !groupEditName.trim()}>{t('saveProfile')}</button><button type="button" className="secondary" onClick={() => setGroupEditName(null)}>{t('cancel')}</button></form>
-              : <div className="group-title"><div className={`avatar-wrap ${busy === 'group-photo' ? 'uploading' : ''}`}><Avatar profile={{ display_name: currentGroup.name, avatar_path: currentGroup.avatar_path }}/>{currentGroup.owner_id === userId && <button type="button" className="avatar-edit group-avatar-edit" disabled={busy !== ''} onClick={() => groupAvatarInput.current?.click()} aria-label={currentGroup.avatar_path ? t('changePhoto') : t('addPhoto')} title={currentGroup.avatar_path ? t('changePhoto') : t('addPhoto')}><Camera size={14}/></button>}</div><h2>{currentGroup.name}</h2>{currentGroup.owner_id === userId && <button type="button" className="icon-button group-edit-btn" onClick={() => setGroupEditName(currentGroup.name)} aria-label={t('editGroup')} title={t('editGroup')}><Pencil size={14}/></button>}</div>}<p className="muted">{t('groupPostsHint')}</p>
+              : <div className="group-title"><div className={`avatar-wrap ${busy === 'group-photo' ? 'uploading' : ''}`}><Avatar profile={{ display_name: currentGroup.name, avatar_path: currentGroup.avatar_path }}/>{currentGroup.owner_id === userId && <button type="button" className="avatar-edit group-avatar-edit" disabled={busy !== ''} onClick={() => groupAvatarInput.current?.click()} aria-label={currentGroup.avatar_path ? t('changePhoto') : t('addPhoto')} title={currentGroup.avatar_path ? t('changePhoto') : t('addPhoto')}><Camera size={14}/></button>}</div><h2>{currentGroup.name}</h2>{currentGroup.owner_id === userId && <button type="button" className="icon-button group-edit-btn" onClick={() => setGroupEditName(currentGroup.name)} aria-label={t('editGroup')} title={t('editGroup')}><Pencil size={14}/></button>}</div>}
+            <p className="muted">{t('groupPostsHint')}</p>
             <h3>{t('groupMembers')}</h3>
             <div className="group-member-list">{currentGroupMembers.map(member => { const person = profileMap.get(member.user_id); return <div className="group-member" key={member.user_id}><Avatar profile={person}/><span><strong>{display(person)}</strong><small>@{person?.handle || 'member'} · {t('joinedGroup', { date: when(member.joined_at) })}</small></span>{currentGroup.owner_id === userId && member.user_id !== userId && <button type="button" className="secondary" disabled={busy !== ''} onClick={() => askConfirm(t('confirmRemoveGroupMember', { name: display(person) }), t('removeMember'), () => changeGroupMember(currentGroup.id, member.user_id, true))}>{t('removeMember')}</button>}</div>; })}</div>
             {currentGroup.owner_id === userId && <div className="group-invite"><label>{t('addMember')}<input value={memberQuery} onChange={e => setMemberQuery(e.target.value)} placeholder={t('searchPeople')}/></label>{memberQuery.trim() && <div className="audience-results">{memberMatches.filter(person => !currentGroupMembers.some(member => member.user_id === person.id)).map(person => <button type="button" key={person.id} disabled={busy !== ''} onClick={() => changeGroupMember(currentGroup.id, person.id)}><Avatar profile={person}/><span>{display(person)} <small>@{person.handle}</small></span><UserPlus size={16}/></button>)}</div>}</div>}
-          </section>}
-          <div className="section-heading"><h2>{t('groupPosts')}</h2></div>
-          {posts.filter(post => post.audience === 'group' && post.group_id === currentGroup?.id).map(renderPost)}
-          {!posts.some(post => post.audience === 'group' && post.group_id === currentGroup?.id) && <div className="empty panel">{t('noGroupPosts')}</div>}
-        </>}
+          </section>
+        </div>}
       </div>}
       {tab === 'messages' && <>
         {chatKeyLoading && <div className="empty panel">{t('loadingPrivateChat')}</div>}
