@@ -15,9 +15,10 @@ A school-only social app for OSFL students. React/Vite provides the frontend; Su
 - Block another student from sending new messages
 - Install on a phone (PWA) with an unread count on the app icon where supported
 - Report a post or comment (spam, harassment, inappropriate, other); reports are stored in the `reports` table, readable only from the Supabase dashboard
+- Each group page has a board to post to its members (posts are not encrypted)
 - Group owners can rename a group and set its photo; year of study is limited to 1 to 3
 
-The audience, group, and encrypted-chat features require the latest migration and frontend deployment. Existing plaintext chats remain marked as legacy. There is no group chat yet. Reports are collected but nobody is notified: a designated reviewer must check the `reports` table (Supabase dashboard > Table Editor) regularly, and school report delivery awaits a reviewer and address. Student profiles cannot be reported yet. Images are limited to school-wide posts because the current image bucket is public.
+The audience, group, and encrypted-chat features require the latest migration and frontend deployment. Existing plaintext chats remain marked as legacy. Reports are collected but nobody is notified: a designated reviewer must check the `reports` table (Supabase dashboard > Table Editor) regularly, and school report delivery awaits a reviewer and address. Student profiles cannot be reported yet. Images are limited to school-wide posts because the current image bucket is public.
 
 ## What is and is not private
 
