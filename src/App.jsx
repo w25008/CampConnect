@@ -583,6 +583,12 @@ export default function App() {
   const contacts = [...others].sort((a, b) => (unreadBySender[b.id] || 0) - (unreadBySender[a.id] || 0));
   const badges = { notifications: unreadNotifications, people: unseenFollowers.length, messages: unreadMessages };
   const badgeText = n => (n > 99 ? '99+' : n);
+  // Unread count on the installed app's icon (where the browser supports it).
+  const totalUnread = badges.notifications + badges.people + badges.messages;
+  useEffect(() => {
+    if (!('setAppBadge' in navigator)) return;
+    (totalUnread > 0 ? navigator.setAppBadge(totalUnread) : navigator.clearAppBadge()).catch(() => {});
+  }, [totalUnread]);
   async function mutate(key, operation, after) {
     setBusy(key); setError('');
     try {

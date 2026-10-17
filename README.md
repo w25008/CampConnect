@@ -1,6 +1,6 @@
 # CampConnect
 
-Live sites: [GitHub Pages](https://w25008.github.io/CampConnect/) and [Vercel](https://pulse-sns-nine.vercel.app/).
+Live site: [pulse-sns-nine.vercel.app](https://pulse-sns-nine.vercel.app/). GitHub holds the code; Vercel builds and hosts the app from `main`. (The old GitHub Pages site is retired; install the phone app only from the Vercel URL.)
 
 A school-only social app for OSFL students. React/Vite provides the frontend; Supabase provides Postgres and email/password authentication.
 
@@ -13,10 +13,26 @@ A school-only social app for OSFL students. React/Vite provides the frontend; Su
 - Share images on school-wide posts, switch between English and Japanese, and choose light or dark mode
 - Set up a browser chat key, save a recovery code, and exchange encrypted one-to-one messages
 - Block another student from sending new messages
+- Install on a phone (PWA) with an unread count on the app icon where supported
 - Report a post or comment (spam, harassment, inappropriate, other); reports are stored in the `reports` table, readable only from the Supabase dashboard
 - Group owners can rename a group and set its photo; year of study is limited to 1 to 3
 
 The audience, group, and encrypted-chat features require the latest migration and frontend deployment. Existing plaintext chats remain marked as legacy. There is no group chat yet. Reports are collected but nobody is notified: a designated reviewer must check the `reports` table (Supabase dashboard > Table Editor) regularly, and school report delivery awaits a reviewer and address. Student profiles cannot be reported yet. Images are limited to school-wide posts because the current image bucket is public.
+
+## What is and is not private
+
+- **Private messages are end-to-end encrypted.** The server and school staff cannot read them. Students must save their recovery code: if they lose both the browser key and the code, old messages are gone for good (a reset only restores sending new ones).
+- **Posts and comments are not encrypted.** They are visible to verified school students and can be reviewed by staff if reported.
+- The site's operator controls the website code, so this is a prototype, not Signal-level security (see the security boundary section below).
+
+## Install on a phone
+
+The app is a PWA, so there is nothing to download from an app store. Install it from the **one** public URL you choose (installs are tied to the URL):
+
+- **iPhone/iPad:** open the site in **Safari**, tap Share, then **Add to Home Screen**.
+- **Android:** open the site in **Chrome**, tap the menu, then **Install app** / **Add to Home screen**.
+
+The home-screen icon shows an unread count where the browser supports the Badging API; iOS requires notification permission for badges, and Android support is partial. There are no push notifications: open the app to check. The service worker only shows the last loaded page when offline; it never caches Supabase data. Icons live in `public/`.
 
 ## Set up the database
 
@@ -51,7 +67,7 @@ Open the URL Vite prints. Run `npm run build` before deployment. Never put a Sup
 ## Deploy for free
 
 1. Apply all migrations through `0012` to the database before deploying the new frontend. New code calls its functions and columns.
-2. Build with `npm run build`. GitHub Pages is published by the [workflow](./.github/workflows/deploy-pages.yml) when `main` is pushed; a separate Vercel project also hosts the app. Check both deploy paths before release.
+2. Build with `npm run build`. Vercel deploys automatically when `main` is pushed; check the deployment finished before inviting students.
 3. Verify the live app with at least three confirmed school accounts. An unconfirmed or external address must not read community data; nonmembers must not fetch selected/group posts, comments, likes, or counts through direct API calls. New group members must not see old posts, and removed members must lose future database access.
 4. Set up chat keys for two accounts. Confirm only ciphertext is stored for new DMs, both participants decrypt, a third account cannot fetch the row, and a fresh browser restores with the recovery code. Test a key reset and legacy plaintext labeling. Test desktop and scrolled mobile screens.
 
