@@ -37,6 +37,8 @@ The home-screen icon shows an unread count where the browser supports the Badgin
 
 ## Set up the database
 
+For the group roster fix, apply `supabase/migrations/0013_group_roster.sql` once after `0012` in the Supabase SQL editor, using the project migration role. It lets current verified members see their group's full member list; outsiders and removed members remain excluded. Deploy the updated frontend after applying the migration. The SQL file being present locally does not apply it to the hosted database.
+
 1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. The existing CampConnect project is already at `0012`. For a project still at `0007`, run `0008` through `0012` in order, each once ([0008](./supabase/migrations/0008_school_audiences_and_encrypted_chat.sql) is the big one). Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
 2. In **Authentication > Sign In / Providers**, keep Email and **Confirm email** enabled. The new school gate checks the confirmed address in `auth.users`. Custom SMTP is configured on the current project; test delivery to a school inbox before inviting more students.
 3. In **Authentication > URL Configuration**, set the Site URL to the public app URL and include production and local URLs in Redirect URLs. The current project uses `https://pulse-sns-nine.vercel.app/` as its Site URL.
@@ -83,4 +85,3 @@ This is a prototype, **not Signal-level security**. It has no ratchet or forward
 Official setup references: [Supabase React Auth](https://supabase.com/docs/guides/auth/quickstarts/react), [Supabase RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [Vercel Vite](https://vercel.com/docs/frameworks/frontend/vite).
 
 For school-only access, do not turn off email confirmation. Review mail delivery and authentication settings before inviting more students.
-

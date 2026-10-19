@@ -156,6 +156,11 @@ export default function App() {
   const [profiles, setProfiles] = useState([]);
   const [posts, setPosts] = useState([]);
   const [groups, setGroups] = useState([]);
+  const [groupPreviews, setGroupPreviews] = useState({});
+  const [groupHistory, setGroupHistory] = useState({ id: '', posts: [], authors: [], hasMore: false, loading: false });
+  const [communityRevision, setCommunityRevision] = useState(0);
+  const groupHistoryRequest = useRef(0);
+  const historyScroll = useRef(null);
   const [groupMembers, setGroupMembers] = useState([]);
   const [activeGroup, setActiveGroup] = useState('');
   const [groupEditName, setGroupEditName] = useState(null);
@@ -248,6 +253,9 @@ export default function App() {
   useEffect(() => { if (!flash) return undefined; const timer = setTimeout(() => setFlash(''), 3000); return () => clearTimeout(timer); }, [flash]);
   const userId = session?.user?.id;
   const messageRequest = useRef(0);
+  const communityRequest = useRef(0);
+  const communityUser = useRef(userId);
+  communityUser.current = userId;
   const recipientRef = useRef('');
   const chatIdentityRef = useRef(null);
   useEffect(() => { chatIdentityRef.current = chatIdentity; }, [chatIdentity]);
@@ -272,6 +280,7 @@ export default function App() {
   }, [session, rejectAccount]);
   const loadCommunity = useCallback(async (spin = false) => {
     if (!userId) return;
+    const request = ++communityRequest.current;
     if (spin) setLoading(true);
     try {
       const [postResult, recentProfiles, followResult, groupResult, membershipResult] = await Promise.all([
@@ -283,9 +292,15 @@ export default function App() {
       ]);
       const firstError = [postResult, recentProfiles, followResult, groupResult, membershipResult].find(r => r.error);
       if (firstError) throw firstError.error;
+      const previewResults = await Promise.all((groupResult.data || []).map(group =>
+        supabase.from('posts').select('id,group_id,author_id,body,created_at').eq('group_id', group.id).eq('audience', 'group')
+          .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1)));
+      const previewError = previewResults.find(result => result.error);
+      if (previewError) throw previewError.error;
+      const previewRows = previewResults.flatMap(result => result.data || []);
       const postRows = postResult.data || [];
       const ids = postRows.map(p => p.id);
-      const authorIds = [...new Set([...postRows.map(p => p.author_id), ...(membershipResult.data || []).map(m => m.user_id), userId])];
+      const authorIds = [...new Set([...postRows.map(p => p.author_id), ...previewRows.map(p => p.author_id), ...(membershipResult.data || []).map(m => m.user_id), userId])];
       const [authorResult, countResult, likeResult] = await Promise.all([
         supabase.from('profiles').select('*').in('id', authorIds),
         ids.length ? supabase.from('post_counts').select('post_id,like_count,comment_count').in('post_id', ids) : Promise.resolve({ data: [], error: null }),
@@ -293,15 +308,18 @@ export default function App() {
       ]);
       const secondError = [authorResult, countResult, likeResult].find(r => r.error);
       if (secondError) throw secondError.error;
+      if (request !== communityRequest.current || userId !== communityUser.current) return;
       // Every real member has a profile (created at sign-up). Without one, the account wasn't set up properly.
       if (!(authorResult.data || []).some(p => p.id === userId)) { await rejectAccount('errNoProfile'); return; }
       const byId = new Map([...(recentProfiles.data || []), ...(authorResult.data || [])].map(p => [p.id, p]));
       setProfiles([...byId.values()]); setPosts(postRows);
+      setGroupPreviews(Object.fromEntries(previewRows.map(post => [post.group_id, post])));
+      setCommunityRevision(value => value + 1);
       setGroups(groupResult.data || []); setGroupMembers(membershipResult.data || []);
       setCounts(countResult.data || []); setLikes(likeResult.data || []);
       setFollows(followResult.data || []); setError('');
-    } catch (err) { setError(err.message || translate(langRef.current, 'errLoadCommunity')); }
-    finally { if (spin) setLoading(false); }
+    } catch (err) { if (request === communityRequest.current && userId === communityUser.current) setError(err.message || translate(langRef.current, 'errLoadCommunity')); }
+    finally { if (spin && request === communityRequest.current && userId === communityUser.current) setLoading(false); }
   }, [userId, rejectAccount]);
   useEffect(() => {
     if (!userId) return undefined;
@@ -479,15 +497,16 @@ export default function App() {
     let cancelled = false;
     setSearching(true);
     const timer = setTimeout(async () => {
-      const term = query.trim().replace(/[^a-zA-Z0-9_ ]/g, '');
-      if (!term) { if (!cancelled) { setSearchResults([]); setSearching(false); } return; }
-      const { data, error: searchError } = await supabase.from('profiles')
-        .select('*')
-        .or(`handle.ilike.%${term}%,display_name.ilike.%${term}%`)
-        .order('created_at', { ascending: false }).limit(50);
+      const term = query.trim().replace(/[\\%_]/g, '\\$&');
+      const [handles, names] = await Promise.all([
+        supabase.from('profiles').select('*').ilike('handle', `%${term}%`).order('created_at', { ascending: false }).limit(50),
+        supabase.from('profiles').select('*').ilike('display_name', `%${term}%`).order('created_at', { ascending: false }).limit(50),
+      ]);
       if (!cancelled) {
-        if (searchError) setError(searchError.message);
-        else setSearchResults(data || []);
+        const searchError = handles.error || names.error;
+        if (searchError) { setError(searchError.message); setSearchResults([]); }
+        else setSearchResults([...new Map([...(handles.data || []), ...(names.data || [])].map(person => [person.id, person])).values()]
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 50));
         setSearching(false);
       }
     }, 250);
@@ -578,11 +597,11 @@ export default function App() {
     const newest = Math.max(Date.now(), ...unread.map(n => Date.parse(n.at) || 0));
     setSeen(s => ({ ...s, notifAt: new Date(newest).toISOString(), followers: [...new Set([...(s.followers || []), ...(followers || [])])] }));
   }, [tab, notifications, followers]);
-  const profileMap = useMemo(() => new Map([...notifyProfiles, ...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].map(p => [p.id, p])), [notifyProfiles, profiles, searchResults, selectedProfile]);
+  const profileMap = useMemo(() => new Map([...notifyProfiles, ...profiles, ...groupHistory.authors, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].map(p => [p.id, p])), [notifyProfiles, profiles, groupHistory.authors, searchResults, selectedProfile]);
   const mine = profileMap.get(userId);
   const followingIds = new Set(follows.map(f => f.following_id));
   const followerIds = new Set(followers || []);
-  const others = [...new Map([...notifyProfiles, ...profiles, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()];
+  const others = [...new Map([...notifyProfiles, ...profiles, ...groupHistory.authors, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()];
   const filtered = (query.trim() ? searchResults.filter(p => p.id !== userId) : others)
     .sort((a, b) => newFollowerIds.includes(b.id) - newFollowerIds.includes(a.id));
   const contacts = [...others].sort((a, b) => (unreadBySender[b.id] || 0) - (unreadBySender[a.id] || 0));
@@ -729,6 +748,7 @@ export default function App() {
   const deletePost = post => mutate('delete', async () => {
     const result = await supabase.from('posts').delete().eq('id', post.id);
     if (!result.error) await removeImages(POST_IMAGE_BUCKET, postImagePaths(post));
+    if (!result.error) setGroupHistory(history => ({ ...history, posts: history.posts.filter(item => item.id !== post.id) }));
     return result;
   }, () => { if (tab === 'post') setTab('feed'); });
   function startEditPost(post) {
@@ -1084,10 +1104,59 @@ export default function App() {
   }
   const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), groups: t('navGroups'), messages: t('navMessages'), profile: t('navProfile'), post: t('postTitle') };
   const currentGroup = groups.find(group => group.id === activeGroup) || groups[0];
-  const groupPosts = currentGroup ? posts.filter(post => post.audience === 'group' && post.group_id === currentGroup.id).sort((a, b) => new Date(a.created_at) - new Date(b.created_at)) : [];
-  const lastGroupPost = groupId => posts.filter(post => post.audience === 'group' && post.group_id === groupId).reduce((best, post) => (!best || new Date(post.created_at) > new Date(best.created_at) ? post : best), null);
+  const currentGroupId = currentGroup?.id || '';
+  const groupPosts = groupHistory.id === currentGroupId ? groupHistory.posts : [];
+  const lastGroupPost = groupId => groupPreviews[groupId];
   const sortedGroups = [...groups].sort((a, b) => new Date(lastGroupPost(b.id)?.created_at || b.created_at) - new Date(lastGroupPost(a.id)?.created_at || a.created_at));
-  useEffect(() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; }, [currentGroup?.id, groupPosts.length, tab, groupView]);
+  async function fetchGroupHistory(groupId, older = false, request = ++groupHistoryRequest.current) {
+    const previous = groupHistory.id === groupId ? groupHistory : { posts: [], authors: [] };
+    setGroupHistory(history => history.id === groupId ? { ...history, loading: true } : { id: groupId, posts: [], authors: [], hasMore: false, loading: true });
+    const pageSize = older ? 50 : Math.min(999, Math.max(50, previous.posts.length));
+    let query = supabase.from('posts').select('*').eq('audience', 'group').eq('group_id', groupId)
+      .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(pageSize + 1);
+    if (older && previous.posts.length) {
+      const first = previous.posts[0];
+      query = query.or(`created_at.lt.${first.created_at},and(created_at.eq.${first.created_at},id.lt.${first.id})`);
+    }
+    try {
+      const { data, error: historyError } = await query;
+      if (historyError) throw historyError;
+      const page = (data || []).slice(0, pageSize);
+      const authorIds = [...new Set(page.map(post => post.author_id))];
+      const authors = authorIds.length ? await supabase.from('profiles').select('*').in('id', authorIds) : { data: [] };
+      if (authors.error) throw authors.error;
+      if (request !== groupHistoryRequest.current) return;
+      if (older && threadRef.current) historyScroll.current = { height: threadRef.current.scrollHeight, top: threadRef.current.scrollTop };
+      setGroupHistory(history => {
+        const retained = older && history.id === groupId ? history : { posts: [], authors: [] };
+        const merged = new Map([...retained.posts, ...page].map(post => [post.id, post]));
+        return { id: groupId, posts: [...merged.values()].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
+          authors: [...new Map([...retained.authors, ...(authors.data || [])].map(person => [person.id, person])).values()],
+          hasMore: (data || []).length > pageSize, loading: false };
+      });
+    } catch (err) {
+      if (request !== groupHistoryRequest.current) return;
+      setError(err.message || translate(langRef.current, 'errLoadCommunity'));
+      setGroupHistory(history => ({ ...history, loading: false }));
+    }
+  }
+  useEffect(() => {
+    const request = ++groupHistoryRequest.current;
+    historyScroll.current = null;
+    if (!userId || tab !== 'groups' || !currentGroupId) { setGroupHistory({ id: '', posts: [], authors: [], hasMore: false, loading: false }); return undefined; }
+    fetchGroupHistory(currentGroupId, false, request);
+    return () => { groupHistoryRequest.current += 1; };
+    // The revision refreshes the active thread after mutations and polling.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, tab, currentGroupId, communityRevision]);
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!el) return;
+    if (historyScroll.current) {
+      el.scrollTop = historyScroll.current.top + el.scrollHeight - historyScroll.current.height;
+      historyScroll.current = null;
+    } else el.scrollTop = el.scrollHeight;
+  }, [currentGroupId, groupPosts.length, tab, groupView]);
   const currentGroupMembers = currentGroup ? groupMembers.filter(member => member.group_id === currentGroup.id) : [];
   const viewingOther = tab === 'profile' && viewProfileId && viewProfileId !== userId;
   // "Sent" / "Seen" is shown under my most recent message only, like most chat apps.
@@ -1165,7 +1234,8 @@ export default function App() {
               <button type="button" className="icon-button" aria-label={t('groupInfo')} title={t('groupInfo')} onClick={() => setShowGroupInfo(true)}><Info size={19}/></button>
             </div>
             <div className="message-list group-thread-list" ref={threadRef} aria-live="polite">
-              {groupPosts.length === 0 && <div className="empty-message">{t('noGroupPosts')}</div>}
+              {groupHistory.id === currentGroupId && groupHistory.hasMore && <button type="button" className="secondary" disabled={groupHistory.loading} onClick={() => fetchGroupHistory(currentGroupId, true)}>{t('loadOlderGroupPosts')}</button>}
+              {groupPosts.length === 0 && !groupHistory.loading && <div className="empty-message">{t('noGroupPosts')}</div>}
               {groupPosts.map(post => { const mine = post.author_id === userId; const author = profileMap.get(post.author_id);
                 return <div key={post.id} className={`message-row ${mine ? 'mine' : ''}`} id={`post-${post.id}`}>
                   {!mine && <small className="group-sender"><Avatar profile={author}/> {display(author)}</small>}
