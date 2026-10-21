@@ -4,6 +4,8 @@ import { supabase } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import loginLogo from './login-logo.png';
+import gaigoLogo from './gaigo-logo.png';
+import itcollegeLogo from './itcollege-logo.png';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
@@ -136,8 +138,8 @@ function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
     finally { setBusy(false); }
   }
   return <div className="auth-wrap"><div className="auth-card">
-    <div className="auth-top"><img className="auth-logo" src={loginLogo} alt="CampConnect"/><div className="prefs"><LangToggle t={t} lang={lang} onChange={onChangeLang}/><ThemeToggle t={t} theme={theme} onToggle={onToggleTheme}/></div></div>
-    <h1>{signup ? t('createAccountTitle') : t('tagline')}</h1>
+    <div className="auth-top"><div className="auth-logos"><img className="auth-side-logo" src={gaigoLogo} alt="Gaigo"/><img className="auth-logo" src={loginLogo} alt="CampConnect"/><img className="auth-side-logo" src={itcollegeLogo} alt="IT College"/></div><div className="prefs"><LangToggle t={t} lang={lang} onChange={onChangeLang}/><ThemeToggle t={t} theme={theme} onToggle={onToggleTheme}/></div></div>
+    <h1 lang={lang}>{signup ? t('createAccountTitle') : t('tagline')}</h1>
     {signup && <p className="muted">{t('signupSubtitle')}</p>}
     <form className="stack-form" onSubmit={submit}>
       {signup && <><label>{t('displayName')}<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label><label>{t('username')}<input required minLength={3} maxLength={34} autoComplete="username" value={handle} onChange={e => setHandle(e.target.value.toLowerCase())} placeholder="your_username" /></label><p className="muted">{t('usernameHint')}</p></>}
@@ -1300,6 +1302,4 @@ export default function App() {
     {lightbox && <Lightbox t={t} urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))} index={lightbox.index} onIndex={index => setLightbox(prev => ({ ...prev, index }))} onClose={() => setLightbox(null)}/>}
   </div>;
 }
-
-
 

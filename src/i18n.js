@@ -338,7 +338,7 @@ const STRINGS = {
     sent: '送信済み',
     seen: '既読',
     errProfileColumns: 'プロフィールの詳細がまだデータベースに設定されていません。管理者に supabase/migrations/0004_profile_details.sql を実行してもらってください。',
-    tagline: 'GaigoとITCollege学生だけ向けのウェブサイト',
+    tagline: 'Gaigo と ITCollegeの学生向けウェブサイト',
     createAccountTitle: 'アカウント作成',
     signupSubtitle: '思いをシェアして、会話を始めよう。',
     displayName: '表示名',
