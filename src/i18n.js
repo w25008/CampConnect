@@ -62,7 +62,7 @@ const STRINGS = {
     previousImage: 'Previous image',
     nextImage: 'Next image',
     close: 'Close',
-    errEditSetup: 'Editing posts and posting several images need a database update. Ask the site admin to run supabase/migrations/0006_post_editing.sql.',
+    errEditSetup: 'Post editing needs the database updates. Ask the site admin to apply supabase/migrations/0014_edit_post_audience.sql after the earlier migrations.',
     // Sharing, single post page, read receipts
     share: 'Share',
     copyLink: 'Copy link',
@@ -323,7 +323,7 @@ const STRINGS = {
     previousImage: '前の画像',
     nextImage: '次の画像',
     close: '閉じる',
-    errEditSetup: '投稿の編集と複数画像の投稿には、データベースの更新が必要です。管理者に supabase/migrations/0006_post_editing.sql を実行してもらってください。',
+    errEditSetup: '投稿の編集にはデータベースの更新が必要です。管理者に、以前のマイグレーション適用後に supabase/migrations/0014_edit_post_audience.sql を適用してもらってください。',
     share: 'シェア',
     copyLink: 'リンクをコピー',
     sendInMessage: 'メッセージで送る',

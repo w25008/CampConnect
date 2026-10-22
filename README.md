@@ -39,6 +39,8 @@ The home-screen icon shows an unread count where the browser supports the Badgin
 
 For the group roster fix, apply `supabase/migrations/0013_group_roster.sql` once after `0012` in the Supabase SQL editor, using the project migration role. It lets current verified members see their group's full member list; outsiders and removed members remain excluded. Deploy the updated frontend after applying the migration. The SQL file being present locally does not apply it to the hosted database.
 
+To change a post's audience while editing it, apply `supabase/migrations/0014_edit_post_audience.sql` once after `0013`, then deploy the updated frontend. The migration updates a post and its selected recipients in one transaction.
+
 1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. The existing CampConnect project is already at `0012`. For a project still at `0007`, run `0008` through `0012` in order, each once ([0008](./supabase/migrations/0008_school_audiences_and_encrypted_chat.sql) is the big one). Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
 2. In **Authentication > Sign In / Providers**, keep Email and **Confirm email** enabled. The new school gate checks the confirmed address in `auth.users`. Custom SMTP is configured on the current project; test delivery to a school inbox before inviting more students.
 3. In **Authentication > URL Configuration**, set the Site URL to the public app URL and include production and local URLs in Redirect URLs. The current project uses `https://pulse-sns-nine.vercel.app/` as its Site URL.
@@ -69,7 +71,7 @@ Open the URL Vite prints. Run `npm run build` before deployment. Never put a Sup
 
 ## Deploy for free
 
-1. Apply all migrations through `0012` to the database before deploying the new frontend. New code calls its functions and columns.
+1. Apply all migrations through `0014` to the database before deploying the new frontend. New code calls its functions and columns.
 2. Build with `npm run build`. Vercel deploys automatically when `main` is pushed; check the deployment finished before inviting students.
 3. Verify the live app with at least three confirmed school accounts. An unconfirmed or external address must not read community data; nonmembers must not fetch selected/group posts, comments, likes, or counts through direct API calls. New group members must not see old posts, and removed members must lose future database access.
 4. Set up chat keys for two accounts. Confirm only ciphertext is stored for new DMs, both participants decrypt, a third account cannot fetch the row, and a fresh browser restores with the recovery code. Test a key reset and legacy plaintext labeling. Test desktop and scrolled mobile screens.
