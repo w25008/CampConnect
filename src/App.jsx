@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { buildAudienceEditPayload } from './lib/postAudience.js';
+import { orderVisibleSavedPosts } from './lib/savedPosts.js';
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
@@ -169,6 +170,12 @@ export default function App() {
   const [tab, setTab] = useState('feed');
   const [profiles, setProfiles] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [savedPostIds, setSavedPostIds] = useState([]);
+  const [savedIdsLoading, setSavedIdsLoading] = useState(true);
+  const [savedRevision, setSavedRevision] = useState(0);
+  const [savedPosts, setSavedPosts] = useState([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const savedPostsRequest = useRef(0);
   const [groups, setGroups] = useState([]);
   const [groupPreviews, setGroupPreviews] = useState({});
   const [groupHistory, setGroupHistory] = useState({ id: '', posts: [], authors: [], hasMore: false, loading: false });
@@ -363,6 +370,62 @@ export default function App() {
     }, 250);
     return () => { active = false; clearTimeout(timer); };
   }, [userId, editAudienceQuery, editingPost?.audience]);
+  useEffect(() => {
+    if (!userId) {
+      setSavedPostIds([]);
+      setSavedIdsLoading(false);
+      setSavedPosts([]);
+      return undefined;
+    }
+    let active = true;
+    setSavedIdsLoading(true);
+    (async () => {
+      const { data, error: savedError } = await supabase.from('saved_posts').select('post_id').eq('user_id', userId).order('created_at', { ascending: false });
+      if (!active) return;
+      if (savedError) {
+        setError(/PGRST205|42P01/.test(`${savedError.code} ${savedError.message}`) ? t('errSavedPostsSetup') : savedError.message);
+        setSavedIdsLoading(false);
+        return;
+      }
+      setSavedPostIds((data || []).map(row => row.post_id));
+      setSavedIdsLoading(false);
+    })();
+    return () => { active = false; };
+  }, [userId, savedRevision]);
+  useEffect(() => {
+    const request = ++savedPostsRequest.current;
+    if (!userId || tab !== 'saved') { setSavedLoading(false); return undefined; }
+    if (savedIdsLoading) { setSavedLoading(true); return undefined; }
+    if (!savedPostIds.length) { setSavedPosts([]); setSavedLoading(false); return undefined; }
+    let active = true;
+    setSavedLoading(true);
+    (async () => {
+      try {
+        const { data, error: postsError } = await supabase.from('posts').select('*').in('id', savedPostIds);
+        if (postsError) throw postsError;
+        const rows = data || [];
+        const authorIds = [...new Set(rows.map(post => post.author_id))];
+        const postIds = rows.map(post => post.id);
+        const [authorResult, countResult, likeResult] = await Promise.all([
+          authorIds.length ? supabase.from('profiles').select('*').in('id', authorIds) : Promise.resolve({ data: [], error: null }),
+          postIds.length ? supabase.from('post_counts').select('post_id,like_count,comment_count').in('post_id', postIds) : Promise.resolve({ data: [], error: null }),
+          postIds.length ? supabase.from('likes').select('post_id,user_id').eq('user_id', userId).in('post_id', postIds) : Promise.resolve({ data: [], error: null }),
+        ]);
+        const queryError = [authorResult, countResult, likeResult].find(result => result.error);
+        if (queryError) throw queryError.error;
+        if (!active || request !== savedPostsRequest.current) return;
+        setSavedPosts(orderVisibleSavedPosts(savedPostIds, rows));
+        setProfiles(prev => mergeRows(prev, authorResult.data || [], 'id'));
+        setCounts(prev => mergeRows(prev, countResult.data || [], 'post_id'));
+        setLikes(prev => [...new Map([...prev, ...(likeResult.data || [])].map(like => [like.post_id, like])).values()]);
+      } catch (err) {
+        if (active && request === savedPostsRequest.current) setError(err.message || t('errLoadCommunity'));
+      } finally {
+        if (active && request === savedPostsRequest.current) setSavedLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [userId, tab, savedPostIds, savedIdsLoading]);
   useEffect(() => {
     if (!userId || tab !== 'groups') return undefined;
     const term = memberQuery.trim().replace(/[%_]/g, '');
@@ -650,6 +713,21 @@ export default function App() {
       if (tab === 'post' && focusPost.id) await loadFocusPost(focusPost.id);
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
+  }
+  async function toggleSavedPost(post) {
+    const isSaved = savedPostIds.includes(post.id);
+    setBusy('save');
+    setError('');
+    try {
+      const result = isSaved
+        ? await supabase.from('saved_posts').delete().eq('user_id', userId).eq('post_id', post.id)
+        : await supabase.from('saved_posts').insert({ user_id: userId, post_id: post.id });
+      if (result.error) throw result.error;
+      setSavedPostIds(prev => isSaved ? prev.filter(id => id !== post.id) : [post.id, ...prev]);
+      setFlash(t(isSaved ? 'postUnsaved' : 'postSaved'));
+    } catch (err) {
+      setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`) ? t('errSavedPostsSetup') : err.message || t('errAction'));
+    } finally { setBusy(''); }
   }
   // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
   const imageErrorText = err => (/bucket not found|image_path|avatar_path|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errImageSetup') : err?.message || t('errAction'));
@@ -1068,6 +1146,7 @@ export default function App() {
     const author = profileMap.get(post.author_id);
     const count = counts.find(c => c.post_id === post.id);
     const liked = likes.some(l => l.post_id === post.id);
+    const saved = savedPostIds.includes(post.id);
     const postComments = commentsByPost[post.id] || [];
     const images = postImagePaths(post);
     const editing = editingPost?.id === post.id;
@@ -1122,7 +1201,7 @@ export default function App() {
         {post.body && <p className="post-body">{post.body}</p>}
         {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
       </>}
-      <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button>
+      <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button><button className={saved ? 'active' : ''} disabled={busy !== ''} aria-label={saved ? t('unsavePost') : t('savePost')} title={saved ? t('unsavePost') : t('savePost')} onClick={() => toggleSavedPost(post)}><Bookmark size={18} fill={saved ? 'currentColor' : 'none'}/></button>
         <div className="share-wrap"><button aria-label={t('share')} title={t('share')} aria-haspopup="menu" aria-expanded={menuPost === `share:${post.id}`} onClick={e => { e.stopPropagation(); setMenuPost(menuPost === `share:${post.id}` ? '' : `share:${post.id}`); }}><Share2 size={18}/> {t('share')}</button>
           {menuPost === `share:${post.id}` && <div className="menu panel share-menu" role="menu">
             <button role="menuitem" onClick={() => copyPostLink(post)}><Link size={16}/> {t('copyLink')}</button>
@@ -1190,7 +1269,7 @@ export default function App() {
       {profileView.posts.map(renderPost)}
     </div>;
   }
-  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), groups: t('navGroups'), messages: t('navMessages'), profile: t('navProfile'), post: t('postTitle') };
+  const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), groups: t('navGroups'), messages: t('navMessages'), saved: t('navSaved'), profile: t('navProfile'), post: t('postTitle') };
   const currentGroup = groups.find(group => group.id === activeGroup) || groups[0];
   const currentGroupId = currentGroup?.id || '';
   const groupPosts = groupHistory.id === currentGroupId ? groupHistory.posts : [];
@@ -1259,7 +1338,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand">CampConnect</div>
-      <nav aria-label={t('mainNav')}>{[['feed', Home], ['notifications', Bell], ['people', Users], ['groups', UsersRound], ['messages', Mail], ['profile', User]].map(([id, Icon]) => {
+      <nav aria-label={t('mainNav')}>{[['feed', Home], ['notifications', Bell], ['people', Users], ['groups', UsersRound], ['messages', Mail], ['saved', Bookmark], ['profile', User]].map(([id, Icon]) => {
         // "Profile" in the menu means my own profile; viewing someone else's highlights nothing.
         const current = id === 'profile' ? tab === 'profile' && viewProfileId === userId : tab === id;
         return <button key={id} className={`nav-link ${current ? 'selected' : ''}`} aria-current={current ? 'page' : undefined} onClick={() => (id === 'profile' ? openProfile(userId) : setTab(id))}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>;
@@ -1267,7 +1346,7 @@ export default function App() {
       <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
+      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); setSavedRevision(value => value + 1); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {notice && <div className="error-banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>
@@ -1283,6 +1362,16 @@ export default function App() {
         {!loading && posts.length === 0 && <div className="empty panel">{t('noPosts')}</div>}
         {posts.map(renderPost)}
       </>}
+      {tab === 'saved' && <div className="saved-posts">
+        <div className="section-heading"><h2>{navTitles.saved}</h2>{savedLoading && <span>{t('loading')}</span>}</div>
+        {!savedLoading && savedPostIds.length === 0 && <div className="empty panel">{t('noSavedPosts')}</div>}
+        {savedPostIds.map(id => {
+          const post = savedPosts.find(saved => saved.id === id);
+          return post
+            ? renderPost(post)
+            : <article className="empty panel saved-unavailable" key={id}><span>{t('savedPostUnavailable')}</span><button type="button" className="secondary" disabled={busy !== ''} onClick={() => toggleSavedPost({ id })}>{t('unsavePost')}</button></article>;
+        })}
+      </div>}
       {tab === 'notifications' && <div className="notif-list">
         {notifications.length === 0 && <div className="empty panel">{t('noNotifications')}</div>}
         {notifications.map(n => {
@@ -1330,7 +1419,9 @@ export default function App() {
                   {!mine && <small className="group-sender"><Avatar profile={author}/> {display(author)}</small>}
                   <div className={`message ${mine ? 'mine' : ''}`}><p>{renderMessageBody(post.body)}</p>{postImagePaths(post).length > 0 && <div className="group-bubble-images">{postImagePaths(post).map(img => <img key={img} src={publicUrl(POST_IMAGE_BUCKET, img)} alt={t('postImageAlt')}/>)}</div>}
                     <small>{when(post.created_at)}{post.edited_at && ` · ${t('edited')}`}</small></div>
-                  <div className="group-bubble-actions">{mine
+                  <div className="group-bubble-actions">
+                    <button type="button" className={`icon-button ${savedPostIds.includes(post.id) ? 'active' : ''}`} aria-label={savedPostIds.includes(post.id) ? t('unsavePost') : t('savePost')} title={savedPostIds.includes(post.id) ? t('unsavePost') : t('savePost')} disabled={busy !== ''} onClick={() => toggleSavedPost(post)}><Bookmark size={13} fill={savedPostIds.includes(post.id) ? 'currentColor' : 'none'}/></button>
+                    {mine
                     ? <button type="button" className="icon-button" aria-label={t('deletePost')} title={t('deletePost')} disabled={busy !== ''} onClick={() => askConfirm(t('confirmDelete'), t('deletePost'), () => deletePost(post))}><Trash2 size={13}/></button>
                     : <button type="button" className="icon-button" aria-label={t('reportPost')} title={t('reportPost')} onClick={() => setReportTarget({ type: 'post', id: post.id })}><Flag size={13}/></button>}</div>
                 </div>; })}
