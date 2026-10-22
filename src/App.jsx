@@ -3,6 +3,7 @@ import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, M
 import { supabase } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
+import { buildAudienceEditPayload } from './lib/postAudience.js';
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
@@ -818,14 +819,7 @@ export default function App() {
     let newPaths = [];
     try {
       if (editingPost.audience === 'school') newPaths = await uploadPostImages(added);
-      const { error: err } = await supabase.rpc('edit_audience_post', {
-        p_post_id: id,
-        p_body: body,
-        p_audience: editingPost.audience,
-        p_user_ids: editingPost.audience === 'selected' ? editingPost.recipients.map(person => person.id) : null,
-        p_group_id: editingPost.audience === 'group' ? editingPost.groupId : null,
-        p_image_paths: editingPost.audience === 'school' ? [...keep, ...newPaths] : [],
-      });
+      const { error: err } = await supabase.rpc('edit_audience_post', buildAudienceEditPayload(editingPost, newPaths));
       if (err) throw err;
       await removeImages(POST_IMAGE_BUCKET, original.filter(p => !keep.includes(p)));
       dropPreviews(added); setEditingPost(null);
