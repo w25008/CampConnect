@@ -35,6 +35,16 @@ const birthdayText = (value, lang) => {
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(lang === 'ja' ? 'ja-JP' : 'en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
 };
 const mergeRows = (prev, rows, key) => [...new Map([...prev, ...rows].map(r => [r[key], r])).values()];
+async function searchAudienceProfiles(term, userId) {
+  const [handles, names] = await Promise.all([
+    supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('handle', `%${term}%`).limit(15),
+    supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('display_name', `%${term}%`).limit(15),
+  ]);
+  if (handles.error || names.error) throw (handles.error || names.error);
+  return [...new Map([...(handles.data || []), ...(names.data || [])]
+    .filter(profile => profile.id !== userId)
+    .map(profile => [profile.id, profile])).values()].slice(0, 20);
+}
 const HANDLE_RE = /^[a-z][a-z0-9_]{2,33}$/;
 const EMPTY_FORM = { display_name: '', handle: '', school: '', course: '', year: '', gender: '', birthday: '', hometown: '', bio: '' };
 // A person's avatar and/or name, clickable to open their profile.
@@ -192,11 +202,13 @@ export default function App() {
   const [chosenStudents, setChosenStudents] = useState([]);
   const [audienceQuery, setAudienceQuery] = useState('');
   const [audienceMatches, setAudienceMatches] = useState([]);
+  const [editAudienceQuery, setEditAudienceQuery] = useState('');
+  const [editAudienceMatches, setEditAudienceMatches] = useState([]);
   const [postImages, setPostImages] = useState([]); // [{ file, preview }] picked in the composer
   const postImageInput = useRef(null);
   const editImageInput = useRef(null);
   const [menuPost, setMenuPost] = useState(''); // post whose ⋯ menu is open
-  const [editingPost, setEditingPost] = useState(null); // { id, body, keep, added, original }
+  const [editingPost, setEditingPost] = useState(null); // { id, audience, groupId, recipients, body, keep, added, original }
   const [reportTarget, setReportTarget] = useState(null); // { type, id }
   const [confirmBox, setConfirmBox] = useState(null); // { message, confirmLabel, onConfirm }
   const [lightbox, setLightbox] = useState(null); // { paths, index }
@@ -330,16 +342,26 @@ export default function App() {
     if (!term || postAudience !== 'selected') { setAudienceMatches([]); return undefined; }
     let active = true;
     const timer = setTimeout(async () => {
-      const [handles, names] = await Promise.all([
-        supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('handle', `%${term}%`).limit(15),
-        supabase.from('profiles').select('id,handle,display_name,avatar_path').ilike('display_name', `%${term}%`).limit(15),
-      ]);
-      if (!active) return;
-      if (handles.error || names.error) { setError((handles.error || names.error).message); return; }
-      setAudienceMatches([...new Map([...(handles.data || []), ...(names.data || [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()].slice(0, 20));
+      try {
+        const profilesForAudience = await searchAudienceProfiles(term, userId);
+        if (active) setAudienceMatches(profilesForAudience);
+      } catch (err) { if (active) setError(err.message || t('errAction')); }
     }, 250);
     return () => { active = false; clearTimeout(timer); };
   }, [userId, audienceQuery, postAudience]);
+  useEffect(() => {
+    if (!userId || editingPost?.audience !== 'selected') { setEditAudienceMatches([]); return undefined; }
+    const term = editAudienceQuery.trim().replace(/[%_]/g, '');
+    if (!term) { setEditAudienceMatches([]); return undefined; }
+    let active = true;
+    const timer = setTimeout(async () => {
+      try {
+        const profilesForAudience = await searchAudienceProfiles(term, userId);
+        if (active) setEditAudienceMatches(profilesForAudience);
+      } catch (err) { if (active) setError(err.message || t('errAction')); }
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [userId, editAudienceQuery, editingPost?.audience]);
   useEffect(() => {
     if (!userId || tab !== 'groups') return undefined;
     const term = memberQuery.trim().replace(/[%_]/g, '');
@@ -630,7 +652,7 @@ export default function App() {
   }
   // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
   const imageErrorText = err => (/bucket not found|image_path|avatar_path|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errImageSetup') : err?.message || t('errAction'));
-  const editErrorText = err => (/image_paths|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errEditSetup') : imageErrorText(err));
+  const editErrorText = err => (/image_paths|PGRST202|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errEditSetup') : imageErrorText(err));
   // Turn picked files into previews, keeping the total at MAX_IMAGES.
   function pickImages(e, existingCount, add) {
     const files = [...(e.target.files || [])]; e.target.value = '';
@@ -754,9 +776,31 @@ export default function App() {
     if (!result.error) setGroupHistory(history => ({ ...history, posts: history.posts.filter(item => item.id !== post.id) }));
     return result;
   }, () => { if (tab === 'post') setTab('feed'); });
-  function startEditPost(post) {
+  async function startEditPost(post) {
     setMenuPost('');
-    setEditingPost({ id: post.id, audience: post.audience || 'school', body: post.body || '', keep: postImagePaths(post), added: [], original: postImagePaths(post) });
+    setBusy('edit');
+    setError('');
+    try {
+      let recipients = [];
+      if (post.audience === 'selected') {
+        const { data: recipientRows, error: recipientError } = await supabase.from('post_recipients').select('user_id').eq('post_id', post.id);
+        if (recipientError) throw recipientError;
+        const recipientIds = (recipientRows || []).map(row => row.user_id);
+        if (recipientIds.length) {
+          const { data: profilesForRecipients, error: profilesError } = await supabase.from('profiles').select('id,handle,display_name,avatar_path').in('id', recipientIds);
+          if (profilesError) throw profilesError;
+          recipients = profilesForRecipients || [];
+        }
+      }
+      const paths = postImagePaths(post);
+      setEditingPost({
+        id: post.id, audience: post.audience || 'school', groupId: post.group_id || '',
+        recipients, body: post.body || '', keep: paths, added: [], original: paths,
+      });
+      setAudienceQuery('');
+      setEditAudienceQuery('');
+    } catch (err) { setError(err.message || t('errAction')); }
+    finally { setBusy(''); }
   }
   function cancelEditPost() {
     if (editingPost) dropPreviews(editingPost.added);
@@ -768,14 +812,21 @@ export default function App() {
     const body = editingPost.body.trim();
     if ((!body && !keep.length && !added.length) || body.length > MAX_POST) return;
     if (editingPost.audience !== 'school' && (!body || keep.length || added.length)) { setError(t('restrictedTextOnly')); return; }
+    if (editingPost.audience === 'selected' && !editingPost.recipients.length) { setError(t('chooseRecipients')); return; }
+    if (editingPost.audience === 'group' && !editingPost.groupId) { setError(t('chooseGroup')); return; }
     setBusy('edit'); setError('');
     let newPaths = [];
     try {
       if (editingPost.audience === 'school') newPaths = await uploadPostImages(added);
-      const changes = editingPost.audience === 'school' ? { body, image_paths: [...keep, ...newPaths], image_path: null } : { body };
-      const { data, error: err } = await supabase.from('posts').update(changes).eq('id', id).select('id');
+      const { error: err } = await supabase.rpc('edit_audience_post', {
+        p_post_id: id,
+        p_body: body,
+        p_audience: editingPost.audience,
+        p_user_ids: editingPost.audience === 'selected' ? editingPost.recipients.map(person => person.id) : null,
+        p_group_id: editingPost.audience === 'group' ? editingPost.groupId : null,
+        p_image_paths: editingPost.audience === 'school' ? [...keep, ...newPaths] : [],
+      });
       if (err) throw err;
-      if (!data?.length) throw { code: '42501' }; // no row changed: editing isn't allowed yet (0006 not run)
       await removeImages(POST_IMAGE_BUCKET, original.filter(p => !keep.includes(p)));
       dropPreviews(added); setEditingPost(null);
       await loadCommunity();
@@ -1024,6 +1075,28 @@ export default function App() {
       <div className="post-audience"><span className="tag">{post.audience === 'group' ? t('audienceGroupNamed', { name: groups.find(group => group.id === post.group_id)?.name || t('audienceGroup') }) : post.audience === 'selected' ? t('audienceSelected') : t('audienceSchool')}</span></div>
       {editing ? <form className="post-edit" onSubmit={saveEditPost}>
         <textarea aria-label={t('editPost')} value={editingPost.body} maxLength={MAX_POST} rows={3} onChange={e => setEditingPost(prev => ({ ...prev, body: e.target.value }))}/>
+        <div className="audience-inline">
+          <select aria-label={t('postAudience')} value={editingPost.audience} disabled={busy !== ''} onChange={e => {
+            const audience = e.target.value;
+            setEditingPost(prev => {
+              if (audience === 'school') return { ...prev, audience };
+              dropPreviews(prev.added);
+              return { ...prev, audience, keep: [], added: [] };
+            });
+            setEditAudienceQuery('');
+          }}>
+            <option value="school">{t('audienceSchool')}</option>
+            <option value="selected">{t('audienceSelected')}</option>
+            <option value="group">{t('audienceGroup')}</option>
+          </select>
+          {editingPost.audience === 'selected' && <div className="audience-detail">
+            <input aria-label={t('chooseStudents')} value={editAudienceQuery} disabled={busy !== ''} onChange={e => setEditAudienceQuery(e.target.value)} placeholder={t('chooseStudents')}/>
+            {editingPost.recipients.length > 0 && <div className="selected-chips">{editingPost.recipients.map(person => <button type="button" key={person.id} className="tag" disabled={busy !== ''} onClick={() => setEditingPost(prev => ({ ...prev, recipients: prev.recipients.filter(recipient => recipient.id !== person.id) }))} aria-label={t('removeRecipient', { name: display(person) })}>{display(person)} ×</button>)}</div>}
+            {editAudienceQuery.trim() && <div className="audience-results">{editAudienceMatches.filter(person => !editingPost.recipients.some(recipient => recipient.id === person.id)).map(person => <button type="button" key={person.id} onClick={() => { setEditingPost(prev => ({ ...prev, recipients: [...prev.recipients, person] })); setEditAudienceQuery(''); }}><Avatar profile={person}/><span>{display(person)} <small>@{person.handle}</small></span></button>)}</div>}
+          </div>}
+          {editingPost.audience === 'group' && <select aria-label={t('chooseGroup')} value={editingPost.groupId} disabled={busy !== ''} onChange={e => setEditingPost(prev => ({ ...prev, groupId: e.target.value }))}><option value="">{t('chooseGroup')}</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select>}
+          {editingPost.audience !== 'school' && <small className="muted">{t('restrictedTextOnly')}</small>}
+        </div>
         {(editingPost.keep.length + editingPost.added.length) > 0 && <div className="image-previews">
           {editingPost.keep.map(p => <div className="image-preview" key={p}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt=""/><button type="button" className="preview-remove" aria-label={t('removeImage')} title={t('removeImage')} onClick={() => setEditingPost(prev => ({ ...prev, keep: prev.keep.filter(k => k !== p) }))}><X size={15}/></button></div>)}
           {editingPost.added.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" aria-label={t('removeImage')} title={t('removeImage')} onClick={() => setEditingPost(prev => { dropPreviews([item]); return { ...prev, added: prev.added.filter((_, j) => j !== i) }; })}><X size={15}/></button></div>)}
@@ -1032,7 +1105,7 @@ export default function App() {
           {editingPost.audience === 'school' && <button type="button" className="icon-button" disabled={busy !== '' || editingPost.keep.length + editingPost.added.length >= MAX_IMAGES} onClick={() => editImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button>}
           <input ref={editImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, editingPost.keep.length + editingPost.added.length, items => setEditingPost(prev => ({ ...prev, added: [...prev.added, ...items] })))}/>
           <small>{editingPost.body.length}/{MAX_POST}</small>
-        </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy === 'edit'} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
+        </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy !== ''} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
       </form> : <>
         {post.body && <p className="post-body">{post.body}</p>}
         {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
@@ -1302,4 +1375,3 @@ export default function App() {
     {lightbox && <Lightbox t={t} urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))} index={lightbox.index} onIndex={index => setLightbox(prev => ({ ...prev, index }))} onClose={() => setLightbox(null)}/>}
   </div>;
 }
-
