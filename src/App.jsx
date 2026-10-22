@@ -7,7 +7,7 @@ import { buildAudienceEditPayload } from './lib/postAudience.js';
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
-import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImage, removeImages, postImagePaths } from './images.js';
+import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
 import { unlockAudio, playSound } from './sounds.js';
@@ -654,6 +654,12 @@ export default function App() {
   // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
   const imageErrorText = err => (/bucket not found|image_path|avatar_path|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errImageSetup') : err?.message || t('errAction'));
   const editErrorText = err => (/image_paths|PGRST202|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errEditSetup') : imageErrorText(err));
+  // Cleanup is best-effort: a failed deletion must never undo a saved post/photo
+  // or hide the original upload/update error. Notices survive data refreshes.
+  async function cleanupImages(bucket, paths) {
+    try { await removeImages(bucket, paths); }
+    catch { setNotice(t('imageCleanupWarning')); }
+  }
   // Turn picked files into previews, keeping the total at MAX_IMAGES.
   function pickImages(e, existingCount, add) {
     const files = [...(e.target.files || [])]; e.target.value = '';
@@ -671,7 +677,7 @@ export default function App() {
     try {
       for (const item of items) paths.push(await uploadImage(POST_IMAGE_BUCKET, userId, await shrinkImage(item.file, 1600)));
       return paths;
-    } catch (err) { await removeImages(POST_IMAGE_BUCKET, paths); throw err; }
+    } catch (err) { await cleanupImages(POST_IMAGE_BUCKET, paths); throw err; }
   }
   async function publish(e) {
     e.preventDefault(); const body = postText.trim();
@@ -681,6 +687,7 @@ export default function App() {
     if (postAudience === 'group' && !postGroup) { setError(t('chooseGroup')); return; }
     setBusy('post'); setError('');
     let paths = [];
+    let saved = false;
     try {
       paths = await uploadPostImages(postImages);
       const { error: err } = await supabase.rpc('create_audience_post', {
@@ -690,10 +697,11 @@ export default function App() {
         p_image_paths: paths,
       });
       if (err) throw err;
+      saved = true;
       setPostText(''); dropPreviews(postImages); setPostImages([]); setChosenStudents([]); setAudienceQuery('');
       await loadCommunity();
     } catch (err) {
-      await removeImages(POST_IMAGE_BUCKET, paths); // don't leave orphaned files behind
+      if (!saved) await cleanupImages(POST_IMAGE_BUCKET, paths);
       setError(paths.length > 1 ? editErrorText(err) : imageErrorText(err));
     } finally { setBusy(''); }
   }
@@ -749,14 +757,16 @@ export default function App() {
     const oldPath = currentGroup.avatar_path;
     setBusy('group-photo'); setError('');
     let newPath = null;
+    let saved = false;
     try {
       newPath = await uploadImage(AVATAR_BUCKET, userId, await shrinkImage(file, 512, true));
       const { error: err } = await supabase.rpc('set_student_group_avatar', { p_group_id: currentGroup.id, p_avatar_path: newPath });
       if (err) throw err;
-      if (oldPath) removeImage(AVATAR_BUCKET, oldPath);
+      saved = true;
+      await cleanupImages(AVATAR_BUCKET, oldPath ? [oldPath] : []);
       await loadCommunity();
     } catch (err) {
-      if (newPath) removeImage(AVATAR_BUCKET, newPath);
+      if (!saved && newPath) await cleanupImages(AVATAR_BUCKET, [newPath]);
       setError(imageErrorText(err));
     } finally { setBusy(''); }
   }
@@ -773,7 +783,7 @@ export default function App() {
   }
   const deletePost = post => mutate('delete', async () => {
     const result = await supabase.from('posts').delete().eq('id', post.id);
-    if (!result.error) await removeImages(POST_IMAGE_BUCKET, postImagePaths(post));
+    if (!result.error) await cleanupImages(POST_IMAGE_BUCKET, postImagePaths(post));
     if (!result.error) setGroupHistory(history => ({ ...history, posts: history.posts.filter(item => item.id !== post.id) }));
     return result;
   }, () => { if (tab === 'post') setTab('feed'); });
@@ -817,17 +827,19 @@ export default function App() {
     if (editingPost.audience === 'group' && !editingPost.groupId) { setError(t('chooseGroup')); return; }
     setBusy('edit'); setError('');
     let newPaths = [];
+    let saved = false;
     try {
       if (editingPost.audience === 'school') newPaths = await uploadPostImages(added);
       const { error: err } = await supabase.rpc('edit_audience_post', buildAudienceEditPayload(editingPost, newPaths));
       if (err) throw err;
-      await removeImages(POST_IMAGE_BUCKET, original.filter(p => !keep.includes(p)));
+      saved = true;
+      await cleanupImages(POST_IMAGE_BUCKET, original.filter(p => !keep.includes(p)));
       dropPreviews(added); setEditingPost(null);
       await loadCommunity();
       if (tab === 'profile' && viewProfileId) await loadProfile(viewProfileId);
       if (tab === 'post') await loadFocusPost(id);
     } catch (err) {
-      await removeImages(POST_IMAGE_BUCKET, newPaths);
+      if (!saved) await cleanupImages(POST_IMAGE_BUCKET, newPaths);
       setError(editErrorText(err));
     } finally { setBusy(''); }
   }
@@ -838,15 +850,18 @@ export default function App() {
     const oldPath = profileView.data?.avatar_path;
     setBusy('photo'); setError('');
     let newPath = null;
+    let saved = false;
     try {
       newPath = await uploadImage(AVATAR_BUCKET, userId, await shrinkImage(file, 512, true));
-      const { error: err } = await supabase.from('profiles').update({ avatar_path: newPath }).eq('id', userId);
+      const { data, error: err } = await supabase.from('profiles').update({ avatar_path: newPath }).eq('id', userId).select('id');
       if (err) throw err;
-      if (oldPath) removeImage(AVATAR_BUCKET, oldPath);
+      if (!data?.length) throw new Error(t('errAction'));
+      saved = true;
+      await cleanupImages(AVATAR_BUCKET, oldPath ? [oldPath] : []);
       setFlash(t('photoUpdated'));
       await Promise.all([loadProfile(userId), loadCommunity()]);
     } catch (err) {
-      if (newPath) removeImage(AVATAR_BUCKET, newPath);
+      if (!saved && newPath) await cleanupImages(AVATAR_BUCKET, [newPath]);
       setError(imageErrorText(err));
     } finally { setBusy(''); }
   }
@@ -854,11 +869,14 @@ export default function App() {
     const oldPath = profileView.data?.avatar_path;
     if (!oldPath) return;
     setBusy('photo'); setError('');
-    const { error: err } = await supabase.from('profiles').update({ avatar_path: null }).eq('id', userId);
-    setBusy('');
-    if (err) { setError(imageErrorText(err)); return; }
-    removeImage(AVATAR_BUCKET, oldPath);
-    await Promise.all([loadProfile(userId), loadCommunity()]);
+    try {
+      const { data, error: err } = await supabase.from('profiles').update({ avatar_path: null }).eq('id', userId).select('id');
+      if (err) throw err;
+      if (!data?.length) throw new Error(t('errAction'));
+      await cleanupImages(AVATAR_BUCKET, [oldPath]);
+      await Promise.all([loadProfile(userId), loadCommunity()]);
+    } catch (err) { setError(imageErrorText(err)); }
+    finally { setBusy(''); }
   }
   function addComment(e, id) {
     e.preventDefault(); const body = (commentText[id] || '').trim();
@@ -1251,6 +1269,7 @@ export default function App() {
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
+      {notice && <div className="error-banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>
         <form className="composer panel" onSubmit={publish}><div className="composer-head"><Avatar profile={mine}/><label htmlFor="post-body">{t('shareThought')}</label></div><textarea id="post-body" value={postText} maxLength={MAX_POST} onChange={e => setPostText(e.target.value)} placeholder={t('whatsHappening')} rows={3}/><div className="audience-inline"><select aria-label={t('postAudience')} value={postAudience} onChange={e => { const next = e.target.value; if (next !== 'school') { dropPreviews(postImages); setPostImages([]); } setPostAudience(next); }}><option value="school">{t('audienceSchool')}</option><option value="selected">{t('audienceSelected')}</option><option value="group">{t('audienceGroup')}</option></select>
           {postAudience === 'selected' && <div className="audience-detail">
@@ -1259,7 +1278,7 @@ export default function App() {
             {audienceQuery.trim() && <div className="audience-results">{audienceMatches.filter(p => !chosenStudents.some(chosen => chosen.id === p.id)).map(person => <button type="button" key={person.id} onClick={() => { setChosenStudents(prev => [...prev, person]); setAudienceQuery(''); }}><Avatar profile={person}/><span>{display(person)} <small>@{person.handle}</small></span></button>)}</div>}
           </div>}
           {postAudience === 'group' && <><select aria-label={t('chooseGroup')} value={postGroup} onChange={e => setPostGroup(e.target.value)}><option value="">{t('chooseGroup')}</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select>{groups.length === 0 && <small>{t('createGroupFirst')}</small>}</>}
-          {postAudience !== 'school' && <small className="muted">{t('restrictedTextOnly')}</small>}</div>{postImages.length > 0 && <div className="image-previews">{postImages.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" onClick={() => removePostImage(i)} disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')}><X size={15}/></button></div>)}</div>}<div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-button" disabled={busy !== '' || postAudience !== 'school' || postImages.length >= MAX_IMAGES} onClick={() => postImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button><input ref={postImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, postImages.length, items => setPostImages(prev => [...prev, ...items]))}/><small>{postText.length}/{MAX_POST}{postImages.length > 0 && ` · ${t('imageCount', { n: postImages.length, max: MAX_IMAGES })}`}</small></div><button className="primary" disabled={busy !== '' || (!postText.trim() && !postImages.length)}><Send size={16}/> {busy === 'post' ? t('uploading') : t('post')}</button></div></form>
+          {postAudience !== 'school' && <small className="muted">{t('restrictedTextOnly')}</small>}</div>{postImages.length > 0 && <div className="image-previews">{postImages.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" onClick={() => removePostImage(i)} disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')}><X size={15}/></button></div>)}</div>}<div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-button" disabled={busy !== '' || postAudience !== 'school' || postImages.length >= MAX_IMAGES} onClick={() => postImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button><input ref={postImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, postImages.length, items => setPostImages(prev => [...prev, ...items]))}/><small>{postAudience === 'school' && `${t('imageCount', { n: postImages.length, max: MAX_IMAGES })} · `}{postText.length}/{MAX_POST}</small></div><button className="primary" disabled={busy !== '' || (!postText.trim() && !postImages.length)}><Send size={16}/> {busy === 'post' ? t('uploading') : t('post')}</button></div></form>
         <div className="section-heading"><h2>{t('latestPosts')}</h2>{loading && <span>{t('loading')}</span>}</div>
         {!loading && posts.length === 0 && <div className="empty panel">{t('noPosts')}</div>}
         {posts.map(renderPost)}

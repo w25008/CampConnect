@@ -42,11 +42,13 @@ export async function uploadImage(bucket, userId, blob) {
 }
 
 export async function removeImage(bucket, path) {
-  if (path) await supabase.storage.from(bucket).remove([path]);
+  return removeImages(bucket, path ? [path] : []);
 }
 
 export async function removeImages(bucket, paths) {
-  if (paths?.length) await supabase.storage.from(bucket).remove(paths);
+  if (!paths?.length) return;
+  const { error } = await supabase.storage.from(bucket).remove(paths);
+  if (error) throw error;
 }
 
 // A post's images: the list from 0006, or the single image older posts have.
