@@ -47,7 +47,7 @@ After applying it, test with two confirmed school accounts: upload and replace a
 
 To save posts for later, apply `supabase/migrations/0016_saved_posts.sql` once after `0015_image_cleanup.sql`, then deploy the updated frontend. Saved post references are private to each student, and the existing post visibility rules still control which post content can be read.
 
-1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. The existing CampConnect project is at least at `0014`. For a project still at `0007`, run `0008` through `0016` in order, each once ([0008](./supabase/migrations/0008_school_audiences_and_encrypted_chat.sql) is the big one). Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
+1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. The existing CampConnect project has been manually updated through `0016`. For a project still at `0007`, run `0008` through `0016` in order, each once ([0008](./supabase/migrations/0008_school_audiences_and_encrypted_chat.sql) is the big one). Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
 2. In **Authentication > Sign In / Providers**, keep Email and **Confirm email** enabled. The new school gate checks the confirmed address in `auth.users`. Custom SMTP is configured on the current project; test delivery to a school inbox before inviting more students.
 3. In **Authentication > URL Configuration**, set the Site URL to the public app URL and include production and local URLs in Redirect URLs. The current project uses `https://pulse-sns-nine.vercel.app/` as its Site URL.
 
