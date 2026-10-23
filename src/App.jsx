@@ -171,6 +171,10 @@ export default function App() {
   const [profiles, setProfiles] = useState([]);
   const [posts, setPosts] = useState([]);
   const [savedPostIds, setSavedPostIds] = useState([]);
+  const [savedPostCollections, setSavedPostCollections] = useState({});
+  const [savedCollections, setSavedCollections] = useState([]);
+  const [savedCollectionFilter, setSavedCollectionFilter] = useState('all');
+  const [newSavedCollection, setNewSavedCollection] = useState('');
   const [savedIdsLoading, setSavedIdsLoading] = useState(true);
   const [savedRevision, setSavedRevision] = useState(0);
   const [savedPosts, setSavedPosts] = useState([]);
@@ -373,6 +377,9 @@ export default function App() {
   useEffect(() => {
     if (!userId) {
       setSavedPostIds([]);
+      setSavedPostCollections({});
+      setSavedCollections([]);
+      setSavedCollectionFilter('all');
       setSavedIdsLoading(false);
       setSavedPosts([]);
       return undefined;
@@ -380,14 +387,23 @@ export default function App() {
     let active = true;
     setSavedIdsLoading(true);
     (async () => {
-      const { data, error: savedError } = await supabase.from('saved_posts').select('post_id').eq('user_id', userId).order('created_at', { ascending: false });
+      const [savedResult, collectionResult] = await Promise.all([
+        supabase.from('saved_posts').select('post_id,collection_id').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('saved_collections').select('id,name').eq('user_id', userId).order('created_at', { ascending: true }),
+      ]);
       if (!active) return;
+      const savedError = savedResult.error || collectionResult.error;
       if (savedError) {
         setError(/PGRST205|42P01/.test(`${savedError.code} ${savedError.message}`) ? t('errSavedPostsSetup') : savedError.message);
         setSavedIdsLoading(false);
         return;
       }
-      setSavedPostIds((data || []).map(row => row.post_id));
+      const savedRows = savedResult.data || [];
+      const collections = collectionResult.data || [];
+      setSavedPostIds(savedRows.map(row => row.post_id));
+      setSavedPostCollections(Object.fromEntries(savedRows.map(row => [row.post_id, row.collection_id])));
+      setSavedCollections(collections);
+      setSavedCollectionFilter(current => current === 'all' || current === 'uncategorized' || collections.some(collection => collection.id === current) ? current : 'all');
       setSavedIdsLoading(false);
     })();
     return () => { active = false; };
@@ -721,12 +737,47 @@ export default function App() {
     try {
       const result = isSaved
         ? await supabase.from('saved_posts').delete().eq('user_id', userId).eq('post_id', post.id)
-        : await supabase.from('saved_posts').insert({ user_id: userId, post_id: post.id });
+        : await supabase.from('saved_posts').insert({ user_id: userId, post_id: post.id, collection_id: null });
       if (result.error) throw result.error;
       setSavedPostIds(prev => isSaved ? prev.filter(id => id !== post.id) : [post.id, ...prev]);
+      if (isSaved) setSavedPostCollections(prev => { const next = { ...prev }; delete next[post.id]; return next; });
+      else setSavedPostCollections(prev => ({ ...prev, [post.id]: null }));
       setFlash(t(isSaved ? 'postUnsaved' : 'postSaved'));
     } catch (err) {
       setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`) ? t('errSavedPostsSetup') : err.message || t('errAction'));
+    } finally { setBusy(''); }
+  }
+  async function createSavedCollection(e) {
+    e.preventDefault();
+    const name = newSavedCollection.trim();
+    if (!name) return;
+    setBusy('saved-collection');
+    setError('');
+    try {
+      const { data, error: insertError } = await supabase.from('saved_collections').insert({ user_id: userId, name }).select('id,name').single();
+      if (insertError) throw insertError;
+      setSavedCollections(prev => [...prev, data]);
+      setSavedCollectionFilter(data.id);
+      setNewSavedCollection('');
+      setFlash(t('savedCollectionCreated'));
+    } catch (err) {
+      setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`)
+        ? t('errSavedPostsSetup')
+        : err?.code === '23505' ? t('savedCollectionExists') : err.message || t('errAction'));
+    } finally { setBusy(''); }
+  }
+  async function assignSavedCollection(postId, collectionId) {
+    const nextCollectionId = collectionId || null;
+    setBusy('saved-collection');
+    setError('');
+    try {
+      const { error: updateError } = await supabase.from('saved_posts').update({ collection_id: nextCollectionId }).eq('user_id', userId).eq('post_id', postId);
+      if (updateError) throw updateError;
+      setSavedPostCollections(prev => ({ ...prev, [postId]: nextCollectionId }));
+    } catch (err) {
+      setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`)
+        ? t('errSavedPostsSetup')
+        : err.message || t('errAction'));
     } finally { setBusy(''); }
   }
   // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
@@ -1270,6 +1321,11 @@ export default function App() {
     </div>;
   }
   const navTitles = { feed: t('navFeed'), notifications: t('navNotifications'), people: t('navPeople'), groups: t('navGroups'), messages: t('navMessages'), saved: t('navSaved'), profile: t('navProfile'), post: t('postTitle') };
+  const visibleSavedPostIds = savedCollectionFilter === 'all'
+    ? savedPostIds
+    : savedCollectionFilter === 'uncategorized'
+      ? savedPostIds.filter(id => !savedPostCollections[id])
+      : savedPostIds.filter(id => savedPostCollections[id] === savedCollectionFilter);
   const currentGroup = groups.find(group => group.id === activeGroup) || groups[0];
   const currentGroupId = currentGroup?.id || '';
   const groupPosts = groupHistory.id === currentGroupId ? groupHistory.posts : [];
@@ -1364,11 +1420,30 @@ export default function App() {
       </>}
       {tab === 'saved' && <div className="saved-posts">
         <div className="section-heading"><h2>{navTitles.saved}</h2>{savedLoading && <span>{t('loading')}</span>}</div>
+        <div className="saved-tools panel">
+          <label>{t('filterSaved')}<select value={savedCollectionFilter} onChange={e => setSavedCollectionFilter(e.target.value)}>
+            <option value="all">{t('allSaved')}</option>
+            <option value="uncategorized">{t('noCollection')}</option>
+            {savedCollections.map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+          </select></label>
+          <form className="saved-collection-create" onSubmit={createSavedCollection}>
+            <label htmlFor="saved-collection-name">{t('newCollection')}</label>
+            <div><input id="saved-collection-name" maxLength={50} value={newSavedCollection} onChange={e => setNewSavedCollection(e.target.value)} placeholder={t('collectionName')} />
+              <button className="primary" disabled={busy !== '' || !newSavedCollection.trim()}><Plus size={16}/>{t('createCollection')}</button></div>
+          </form>
+        </div>
         {!savedLoading && savedPostIds.length === 0 && <div className="empty panel">{t('noSavedPosts')}</div>}
-        {savedPostIds.map(id => {
+        {!savedLoading && savedPostIds.length > 0 && visibleSavedPostIds.length === 0 && <div className="empty panel">{t('noSavedInCollection')}</div>}
+        {visibleSavedPostIds.map(id => {
           const post = savedPosts.find(saved => saved.id === id);
           return post
-            ? renderPost(post)
+            ? <div className="saved-post-entry" key={id}>
+                <label className="saved-post-category">{t('saveToCollection')}<select aria-label={t('saveToCollection')} value={savedPostCollections[id] || ''} disabled={busy !== ''} onChange={e => assignSavedCollection(id, e.target.value)}>
+                  <option value="">{t('noCollection')}</option>
+                  {savedCollections.map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+                </select></label>
+                {renderPost(post)}
+              </div>
             : <article className="empty panel saved-unavailable" key={id}><span>{t('savedPostUnavailable')}</span><button type="button" className="secondary" disabled={busy !== ''} onClick={() => toggleSavedPost({ id })}>{t('unsavePost')}</button></article>;
         })}
       </div>}
