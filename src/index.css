@@ -161,3 +161,4 @@ img.avatar{object-fit:cover;background:var(--chip)}.avatar-wrap{position:relativ
 .header-actions{display:flex;align-items:center;gap:6px}.header-actions .icon-button.active{background:var(--chip)}.group-list-pane .group-create-row{padding-top:12px}
 .group-list-pane.panel{background:none;border:0;box-shadow:none;align-self:start;overflow:visible}.group-list-pane .group-rows{padding:0}.group-list-pane .group-create-row{padding:0 0 10px}@media(max-width:800px){.groups-layout[data-view=list]{height:auto;min-height:0}}
 .groups-layout{margin:18px 24px 22px}.group-row{padding:10px 14px}.group-row-time{margin-right:2px}@media(max-width:800px){.groups-layout{margin:14px 16px 12px}}
+.username-preview{margin:-6px 0 0;font-size:.8rem;color:var(--accent-soft);font-weight:600}.form-grid input.read-only{color:var(--muted);background:var(--chip);cursor:not-allowed}
