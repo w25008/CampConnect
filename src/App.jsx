@@ -11,6 +11,7 @@ import itcollegeLogo from './itcollege-logo.png';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
+import { handleFromEmail } from './username.js';
 import { unlockAudio, playSound } from './sounds.js';
 
 const MAX_POST = 500;
@@ -47,7 +48,6 @@ async function searchAudienceProfiles(term, userId) {
     .filter(profile => profile.id !== userId)
     .map(profile => [profile.id, profile])).values()].slice(0, 20);
 }
-const HANDLE_RE = /^[a-z][a-z0-9_]{2,33}$/;
 const EMPTY_FORM = { display_name: '', handle: '', school: '', course: '', year: '', gender: '', birthday: '', hometown: '', bio: '' };
 // A person's avatar and/or name, clickable to open their profile.
 function PersonLink({ onOpen, title, className = '', children }) {
@@ -121,16 +121,14 @@ function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [handle, setHandle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // The username is the school email ID; the database sets it, this is just the preview.
+  const h = handleFromEmail(email);
   async function submit(e) {
     e.preventDefault(); setError('');
-    const h = handle.trim().toLowerCase();
     if (!isSchoolEmail(email)) { setError(t('errSchoolEmail', { example: `w25009@${SCHOOL_DOMAIN}` })); return; }
-    if (signup && (!/^[a-z][a-z0-9_]{2,33}$/.test(h) || !name.trim())) {
-      setError(t('errSignupFields')); return;
-    }
+    if (signup && !name.trim()) { setError(t('errSignupFields')); return; }
     setBusy(true);
     try {
 
@@ -154,8 +152,9 @@ function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
     <h1 lang={lang}>{signup ? t('createAccountTitle') : t('tagline')}</h1>
     {signup && <p className="muted">{t('signupSubtitle')}</p>}
     <form className="stack-form" onSubmit={submit}>
-      {signup && <><label>{t('displayName')}<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label><label>{t('username')}<input required minLength={3} maxLength={34} autoComplete="username" value={handle} onChange={e => setHandle(e.target.value.toLowerCase())} placeholder="your_username" /></label><p className="muted">{t('usernameHint')}</p></>}
+      {signup && <label>{t('displayName')}<input required maxLength={60} autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label>}
       <label>{t('schoolEmail')}<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={`w25000@${SCHOOL_DOMAIN}`} /></label>
+      {signup && <p className="username-preview">{isSchoolEmail(email) ? t('usernamePreview', { handle: h }) : t('usernameHint')}</p>}
       <label>{t('password')}<input required type="password" minLength={6} autoComplete={signup ? 'new-password' : 'current-password'} value={password} onChange={e => setPassword(e.target.value)} /></label>
       {error && <p className="error-text" role="alert">{error}</p>}
       <button className="primary" disabled={busy}>{busy ? t('pleaseWait') : signup ? t('createAccount') : t('signIn')}</button>
@@ -1172,12 +1171,12 @@ export default function App() {
   const setField = key => e => setForm(prev => ({ ...prev, [key]: e.target.value }));
   async function saveProfile(e) {
     e.preventDefault(); setError('');
-    const handle = form.handle.trim().toLowerCase();
-    if (!form.display_name.trim() || !HANDLE_RE.test(handle)) { setError(t('errSignupFields')); return; }
+    if (!form.display_name.trim()) { setError(t('errSignupFields')); return; }
     const orNull = v => (v.trim() ? v.trim() : null);
     setBusy('profile');
+    // The username isn't sent: it always follows the school email (0018_username_from_email.sql).
     const { error: err } = await supabase.from('profiles').update({
-      display_name: form.display_name.trim(), handle,
+      display_name: form.display_name.trim(),
       school: form.school || null, course: orNull(form.course), year: form.year ? Number(form.year) : null,
       gender: form.gender || null, birthday: form.birthday || null, hometown: orNull(form.hometown), bio: orNull(form.bio),
     }).eq('id', userId);
@@ -1304,7 +1303,7 @@ export default function App() {
         <div className="photo-row"><Avatar profile={p}/><button type="button" className="secondary" disabled={busy !== ''} onClick={() => avatarInput.current?.click()}><Camera size={16}/> {busy === 'photo' ? t('uploading') : p.avatar_path ? t('changePhoto') : t('addPhoto')}</button>{p.avatar_path && <button type="button" className="text-button danger-text" disabled={busy !== ''} onClick={() => askConfirm(t('confirmRemovePhoto'), t('removePhoto'), removeAvatar)}>{t('removePhoto')}</button>}</div>
         <div className="form-grid">
           <label>{t('displayName')}<input required maxLength={60} value={form.display_name} onChange={setField('display_name')}/></label>
-          <label>{t('username')}<input required minLength={3} maxLength={34} value={form.handle} onChange={e => setForm(prev => ({ ...prev, handle: e.target.value.toLowerCase() }))}/></label>
+          <label>{t('username')}<input value={`@${form.handle}`} readOnly aria-readonly="true" className="read-only"/><small>{t('usernameLocked')}</small></label>
           <label>{t('school')}<select value={form.school} onChange={setField('school')}><option value="">{t('chooseOne')}</option><option value="gaigo">{t('schoolGaigo')}</option><option value="itcollege">{t('schoolItcollege')}</option></select></label>
           <label>{t('course')}<input maxLength={80} value={form.course} onChange={setField('course')} placeholder={t('coursePlaceholder')}/></label>
           <label>{t('year')}<select value={form.year} onChange={setField('year')}><option value="">{t('chooseOne')}</option>{[1, 2, 3].map(n => <option key={n} value={n}>{t('yearValue', { n })}</option>)}</select></label>
