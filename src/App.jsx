@@ -84,7 +84,7 @@ function ConfirmDialog({ message, confirmLabel, cancelLabel, onConfirm, onCancel
     </div>
   </div>;
 }
-function Lightbox({ t, urls, index, onIndex, onClose }) {
+function Lightbox({ t, urls, index, onIndex, onClose, post, canReport, likeCount, commentCount, liked, saved, busy, onLike, onComment, onSave, onShare, onCopyLink, onReport }) {
   const many = urls.length > 1;
   const go = step => onIndex((index + step + urls.length) % urls.length);
   useEffect(() => {
@@ -104,6 +104,14 @@ function Lightbox({ t, urls, index, onIndex, onClose }) {
       <button className="lightbox-btn next" onClick={e => { e.stopPropagation(); go(1); }} aria-label={t('nextImage')} title={t('nextImage')}><ChevronRight size={26}/></button>
       <span className="lightbox-count">{index + 1} / {urls.length}</span>
     </>}
+    {post && <div className="lightbox-post-actions" role="toolbar" aria-label={t('postActions')} onClick={e => e.stopPropagation()}>
+      <button type="button" className={liked ? 'active' : ''} disabled={busy} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={onLike}><Heart size={19} fill={liked ? 'currentColor' : 'none'}/><span>{likeCount}</span></button>
+      <button type="button" aria-label={t('comments')} onClick={onComment}><MessageCircle size={19}/><span>{commentCount}</span></button>
+      <button type="button" className={saved ? 'active' : ''} disabled={busy} aria-label={saved ? t('unsavePost') : t('savePost')} onClick={onSave}><Bookmark size={19} fill={saved ? 'currentColor' : 'none'}/></button>
+      <button type="button" onClick={onShare}><Share2 size={19}/><span>{t('share')}</span></button>
+      <button type="button" onClick={onCopyLink}><Link size={18}/><span>{t('copyLink')}</span></button>
+      {canReport && <button type="button" aria-label={t('reportPost')} onClick={onReport}><Flag size={18}/><span>{t('reportPost')}</span></button>}
+    </div>}
   </div>;
 }
 function ThemeToggle({ t, theme, onToggle }) {
@@ -1249,7 +1257,7 @@ export default function App() {
         </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy !== ''} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
       </form> : <>
         {post.body && <p className="post-body">{post.body}</p>}
-        {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
+        {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i, post })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
       </>}
       <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button><button className={saved ? 'active' : ''} disabled={busy !== ''} aria-label={saved ? t('unsavePost') : t('savePost')} title={saved ? t('unsavePost') : t('savePost')} onClick={() => toggleSavedPost(post)}><Bookmark size={18} fill={saved ? 'currentColor' : 'none'}/></button>
         <div className="share-wrap"><button aria-label={t('share')} title={t('share')} aria-haspopup="menu" aria-expanded={menuPost === `share:${post.id}`} onClick={e => { e.stopPropagation(); setMenuPost(menuPost === `share:${post.id}` ? '' : `share:${post.id}`); }}><Share2 size={18}/> {t('share')}</button>
@@ -1550,6 +1558,27 @@ export default function App() {
     </div>}
     {reportTarget && <ReportDialog t={t} busy={busy !== ''} onCancel={() => setReportTarget(null)} onSubmit={submitReport}/>}
     {confirmBox && <ConfirmDialog message={confirmBox.message} confirmLabel={confirmBox.confirmLabel} cancelLabel={t('cancel')} onCancel={() => setConfirmBox(null)} onConfirm={() => { const run = confirmBox.onConfirm; setConfirmBox(null); run(); }}/>}
-    {lightbox && <Lightbox t={t} urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))} index={lightbox.index} onIndex={index => setLightbox(prev => ({ ...prev, index }))} onClose={() => setLightbox(null)}/>}
+    {lightbox && <Lightbox
+      t={t}
+      urls={lightbox.paths.map(p => publicUrl(POST_IMAGE_BUCKET, p))}
+      index={lightbox.index}
+      onIndex={index => setLightbox(prev => ({ ...prev, index }))}
+      onClose={() => setLightbox(null)}
+      post={lightbox.post}
+      canReport={lightbox.post.author_id !== userId}
+      likeCount={counts.find(item => item.post_id === lightbox.post.id)?.like_count ?? 0}
+      commentCount={counts.find(item => item.post_id === lightbox.post.id)?.comment_count ?? 0}
+      liked={likes.some(item => item.post_id === lightbox.post.id)}
+      saved={savedPostIds.includes(lightbox.post.id)}
+      busy={busy !== ''}
+      onLike={() => mutate('like', () => likes.some(item => item.post_id === lightbox.post.id)
+        ? supabase.from('likes').delete().eq('post_id', lightbox.post.id).eq('user_id', userId)
+        : supabase.from('likes').insert({ post_id: lightbox.post.id, user_id: userId }))}
+      onComment={() => { const id = lightbox.post.id; setLightbox(null); loadComments(id); setOpenComments(prev => ({ ...prev, [id]: true })); }}
+      onSave={() => toggleSavedPost(lightbox.post)}
+      onShare={() => { const post = lightbox.post; setLightbox(null); setShareTarget(post); setShareQuery(''); }}
+      onCopyLink={() => copyPostLink(lightbox.post)}
+      onReport={() => { const id = lightbox.post.id; setLightbox(null); setReportTarget({ type: 'post', id }); }}
+    />}
   </div>;
 }
