@@ -211,7 +211,7 @@ const STRINGS = {
     writeComment: 'Write a comment...',
     sendComment: 'Send comment',
     // Notifications (the actor's name comes first, then the action)
-    noNotifications: 'No notifications yet. Likes, comments, new posts, and followers will show up here.',
+    noNotifications: 'No notifications yet. New posts, likes and comments from people you follow, and new followers, will show up here.',
     notifLike: ' liked your post',
     notifComment: ' commented on your post',
     notifPost: ' shared a new post',
@@ -504,7 +504,7 @@ const STRINGS = {
     noComments: 'まだコメントはありません。',
     writeComment: 'コメントを書く...',
     sendComment: 'コメントを送信',
-    noNotifications: 'まだ通知はありません。いいね、コメント、新しい投稿、フォローがここに表示されます。',
+    noNotifications: 'まだ通知はありません。フォロー中の人の新しい投稿・いいね・コメントと、新しいフォロワーがここに表示されます。',
     notifLike: 'さんがあなたの投稿にいいねしました',
     notifComment: 'さんがあなたの投稿にコメントしました',
     notifPost: 'さんが新しい投稿をシェアしました',

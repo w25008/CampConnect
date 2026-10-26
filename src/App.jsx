@@ -546,13 +546,19 @@ export default function App() {
   }, [userId]);
   const loadNotifications = useCallback(async () => {
     if (!userId) return;
+    // Notifications only come from people I follow: their new posts, and their likes and
+    // comments on my posts. ("Started following you" still comes from anyone, so I can follow back.)
+    const followingResult = await supabase.from('follows').select('following_id').eq('follower_id', userId);
+    if (followingResult.error) { setError(followingResult.error.message); return; }
+    const followingList = (followingResult.data || []).map(f => f.following_id);
+    const none = Promise.resolve({ data: [], error: null });
     const [followerResult, inboxResult, likeResult, commentResult, postResult] = await Promise.all([
       supabase.from('follows').select('follower_id').eq('following_id', userId),
       supabase.from('direct_messages').select('sender_id,created_at').eq('recipient_id', userId).order('created_at', { ascending: false }).limit(500),
       // Likes and comments on my posts (the !inner join keeps only rows whose post I wrote).
-      supabase.from('likes').select('post_id,user_id,posts!inner(author_id,body)').eq('posts.author_id', userId).neq('user_id', userId).limit(500),
-      supabase.from('comments').select('id,post_id,author_id,body,created_at,posts!inner(author_id)').eq('posts.author_id', userId).neq('author_id', userId).order('created_at', { ascending: false }).limit(100),
-      supabase.from('posts').select('*').neq('author_id', userId).order('created_at', { ascending: false }).limit(50),
+      followingList.length ? supabase.from('likes').select('post_id,user_id,posts!inner(author_id,body)').eq('posts.author_id', userId).in('user_id', followingList).limit(500) : none,
+      followingList.length ? supabase.from('comments').select('id,post_id,author_id,body,created_at,posts!inner(author_id)').eq('posts.author_id', userId).in('author_id', followingList).order('created_at', { ascending: false }).limit(100) : none,
+      followingList.length ? supabase.from('posts').select('*').in('author_id', followingList).order('created_at', { ascending: false }).limit(50) : none,
     ]);
     const failed = [followerResult, inboxResult, likeResult, commentResult, postResult].find(r => r.error);
     if (failed) { setError(failed.error.message); return; }
@@ -1219,7 +1225,12 @@ export default function App() {
   }
   const toggleFollow = id => mutate('follow', () => (followingIds.has(id)
     ? supabase.from('follows').delete().eq('follower_id', userId).eq('following_id', id)
-    : supabase.from('follows').insert({ follower_id: userId, following_id: id })));
+    : supabase.from('follows').insert({ follower_id: userId, following_id: id })), () => {
+    // Notifications depend on who I follow, so refresh them now. Reset the sound baseline
+    // first: someone's older posts appearing after I follow them aren't "new" activity.
+    known.current = null;
+    loadNotifications();
+  });
   function startEdit() {
     const p = profileView.data || {};
     setForm(Object.fromEntries(Object.keys(EMPTY_FORM).map(k => [k, p[k] == null ? '' : String(p[k])])));
