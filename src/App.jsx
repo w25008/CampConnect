@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder } from 'lucide-react';
 import { supabase } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
@@ -773,6 +773,22 @@ export default function App() {
         : err?.code === '23505' ? t('savedCollectionExists') : err.message || t('errAction'));
     } finally { setBusy(''); }
   }
+  // Deleting a collection keeps its posts saved: the database sets their collection
+  // to "No collection" (saved_posts.collection_id is ON DELETE SET NULL in 0017).
+  async function deleteSavedCollection(collection) {
+    setBusy('saved-collection');
+    setError('');
+    try {
+      const { error: deleteError } = await supabase.from('saved_collections').delete().eq('id', collection.id).eq('user_id', userId);
+      if (deleteError) throw deleteError;
+      setSavedCollections(prev => prev.filter(c => c.id !== collection.id));
+      setSavedPostCollections(prev => Object.fromEntries(Object.entries(prev).map(([postId, c]) => [postId, c === collection.id ? null : c])));
+      setSavedCollectionFilter('all');
+      setFlash(t('collectionDeleted', { name: collection.name }));
+    } catch (err) {
+      setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`) ? t('errSavedPostsSetup') : err.message || t('errAction'));
+    } finally { setBusy(''); }
+  }
   async function assignSavedCollection(postId, collectionId) {
     const nextCollectionId = collectionId || null;
     setBusy('saved-collection');
@@ -781,6 +797,8 @@ export default function App() {
       const { error: updateError } = await supabase.from('saved_posts').update({ collection_id: nextCollectionId }).eq('user_id', userId).eq('post_id', postId);
       if (updateError) throw updateError;
       setSavedPostCollections(prev => ({ ...prev, [postId]: nextCollectionId }));
+      const target = savedCollections.find(collection => collection.id === nextCollectionId);
+      setFlash(target ? t('movedToCollection', { name: target.name }) : t('removedFromCollection'));
     } catch (err) {
       setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`)
         ? t('errSavedPostsSetup')
@@ -1428,11 +1446,17 @@ export default function App() {
       {tab === 'saved' && <div className="saved-posts">
         <div className="section-heading"><h2>{navTitles.saved}</h2>{savedLoading && <span>{t('loading')}</span>}</div>
         <div className="saved-tools panel">
-          <label>{t('filterSaved')}<select value={savedCollectionFilter} onChange={e => setSavedCollectionFilter(e.target.value)}>
-            <option value="all">{t('allSaved')}</option>
-            <option value="uncategorized">{t('noCollection')}</option>
-            {savedCollections.map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
-          </select></label>
+          {/* Facebook-style: "All" plus one button per collection. */}
+          <div className="collection-chips" role="group" aria-label={t('filterSaved')}>
+            <button type="button" className={`chip ${savedCollectionFilter === 'all' ? 'active' : ''}`} aria-pressed={savedCollectionFilter === 'all'} onClick={() => setSavedCollectionFilter('all')}><Bookmark size={15}/> {t('allSaved')} <span className="chip-count">{savedPostIds.length}</span></button>
+            {savedCollections.map(collection => {
+              const active = savedCollectionFilter === collection.id;
+              return <span key={collection.id} className={`chip-group ${active ? 'active' : ''}`}>
+                <button type="button" className={`chip ${active ? 'active' : ''}`} aria-pressed={active} onClick={() => setSavedCollectionFilter(collection.id)}><Folder size={15}/> {collection.name} <span className="chip-count">{savedPostIds.filter(id => savedPostCollections[id] === collection.id).length}</span></button>
+                {active && <button type="button" className="chip-delete" disabled={busy !== ''} aria-label={t('deleteCollection')} title={t('deleteCollection')} onClick={() => askConfirm(t('confirmDeleteCollection', { name: collection.name }), t('deleteCollection'), () => deleteSavedCollection(collection))}><Trash2 size={15}/></button>}
+              </span>;
+            })}
+          </div>
           <form className="saved-collection-create" onSubmit={createSavedCollection}>
             <label htmlFor="saved-collection-name">{t('newCollection')}</label>
             <div><input id="saved-collection-name" maxLength={50} value={newSavedCollection} onChange={e => setNewSavedCollection(e.target.value)} placeholder={t('collectionName')} />
@@ -1445,10 +1469,10 @@ export default function App() {
           const post = savedPosts.find(saved => saved.id === id);
           return post
             ? <div className="saved-post-entry" key={id}>
-                <label className="saved-post-category">{t('saveToCollection')}<select aria-label={t('saveToCollection')} value={savedPostCollections[id] || ''} disabled={busy !== ''} onChange={e => assignSavedCollection(id, e.target.value)}>
-                  <option value="">{t('noCollection')}</option>
+                {savedCollections.length > 0 && <label className="saved-post-category"><FolderInput size={16} aria-hidden="true"/><select aria-label={t('addToCollection')} value={savedPostCollections[id] || ''} disabled={busy !== ''} onChange={e => assignSavedCollection(id, e.target.value)}>
+                  <option value="">{savedPostCollections[id] ? t('removeFromCollection') : t('addToCollection')}</option>
                   {savedCollections.map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
-                </select></label>
+                </select></label>}
                 {renderPost(post)}
               </div>
             : <article className="empty panel saved-unavailable" key={id}><span>{t('savedPostUnavailable')}</span><button type="button" className="secondary" disabled={busy !== ''} onClick={() => toggleSavedPost({ id })}>{t('unsavePost')}</button></article>;
