@@ -182,6 +182,7 @@ export default function App() {
   const [savedCollections, setSavedCollections] = useState([]);
   const [savedCollectionFilter, setSavedCollectionFilter] = useState('all');
   const [newSavedCollection, setNewSavedCollection] = useState('');
+  const [savePicker, setSavePicker] = useState(null); // { post, newName } while choosing where to save
   const [savedIdsLoading, setSavedIdsLoading] = useState(true);
   const [savedRevision, setSavedRevision] = useState(0);
   const [savedPosts, setSavedPosts] = useState([]);
@@ -737,22 +738,52 @@ export default function App() {
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
   }
+  const savedErrorText = err => (/PGRST205|42P01/.test(`${err?.code} ${err?.message}`) ? t('errSavedPostsSetup') : err?.message || t('errAction'));
+  // Save button: an unsaved post opens the "Save to…" picker (like Facebook); a saved one is unsaved.
   async function toggleSavedPost(post) {
-    const isSaved = savedPostIds.includes(post.id);
+    if (!savedPostIds.includes(post.id)) { setSavePicker({ post, newName: '' }); return; }
     setBusy('save');
     setError('');
     try {
-      const result = isSaved
-        ? await supabase.from('saved_posts').delete().eq('user_id', userId).eq('post_id', post.id)
-        : await supabase.from('saved_posts').insert({ user_id: userId, post_id: post.id, collection_id: null });
+      const result = await supabase.from('saved_posts').delete().eq('user_id', userId).eq('post_id', post.id);
       if (result.error) throw result.error;
-      setSavedPostIds(prev => isSaved ? prev.filter(id => id !== post.id) : [post.id, ...prev]);
-      if (isSaved) setSavedPostCollections(prev => { const next = { ...prev }; delete next[post.id]; return next; });
-      else setSavedPostCollections(prev => ({ ...prev, [post.id]: null }));
-      setFlash(t(isSaved ? 'postUnsaved' : 'postSaved'));
+      setSavedPostIds(prev => prev.filter(id => id !== post.id));
+      setSavedPostCollections(prev => { const next = { ...prev }; delete next[post.id]; return next; });
+      setFlash(t('postUnsaved'));
+    } catch (err) { setError(savedErrorText(err)); } finally { setBusy(''); }
+  }
+  // Save a post straight into a collection (no collection = just save it, shown under "All").
+  async function savePostTo(post, collection) {
+    setBusy('save');
+    setError('');
+    try {
+      const { error: insertError } = await supabase.from('saved_posts').insert({ user_id: userId, post_id: post.id, collection_id: collection?.id || null });
+      if (insertError) throw insertError;
+      setSavedPostIds(prev => [post.id, ...prev.filter(id => id !== post.id)]);
+      setSavedPostCollections(prev => ({ ...prev, [post.id]: collection?.id || null }));
+      setSavePicker(null);
+      setFlash(collection ? t('savedToCollection', { name: collection.name }) : t('postSaved'));
+    } catch (err) { setError(savedErrorText(err)); } finally { setBusy(''); }
+  }
+  async function createCollectionAndSave(e) {
+    e.preventDefault();
+    const name = savePicker.newName.trim();
+    if (!name) return;
+    setBusy('save');
+    setError('');
+    let created = null;
+    try {
+      const { data, error: insertError } = await supabase.from('saved_collections').insert({ user_id: userId, name }).select('id,name').single();
+      if (insertError) throw insertError;
+      created = data;
+      setSavedCollections(prev => [...prev, data]);
     } catch (err) {
-      setError(/PGRST205|42P01/.test(`${err?.code} ${err?.message}`) ? t('errSavedPostsSetup') : err.message || t('errAction'));
-    } finally { setBusy(''); }
+      setError(err?.code === '23505' ? t('savedCollectionExists') : savedErrorText(err));
+      setBusy('');
+      return;
+    }
+    setBusy('');
+    await savePostTo(savePicker.post, created);
   }
   async function createSavedCollection(e) {
     e.preventDefault();
@@ -1581,6 +1612,26 @@ export default function App() {
       </div>
     </div>}
     {reportTarget && <ReportDialog t={t} busy={busy !== ''} onCancel={() => setReportTarget(null)} onSubmit={submitReport}/>}
+    {savePicker && <div className="modal-backdrop save-picker-backdrop" onClick={() => setSavePicker(null)} onKeyDown={e => { if (e.key === 'Escape') setSavePicker(null); }}>
+      <div className="modal panel save-picker" role="dialog" aria-modal="true" aria-label={t('saveTo')} onClick={e => e.stopPropagation()}>
+        <h2>{t('saveTo')}</h2>
+        <div className="save-picker-list">
+          {savedCollections.map(collection => <button key={collection.id} type="button" className="save-picker-item" disabled={busy !== ''} onClick={() => savePostTo(savePicker.post, collection)}>
+            <span className="save-picker-icon"><Folder size={20}/></span>
+            <span className="save-picker-text"><strong>{collection.name}</strong><small>{t('collectionPostCount', { n: savedPostIds.filter(id => savedPostCollections[id] === collection.id).length })}</small></span>
+          </button>)}
+          <button type="button" className="save-picker-item" disabled={busy !== ''} onClick={() => savePostTo(savePicker.post, null)}>
+            <span className="save-picker-icon plain"><Bookmark size={20}/></span>
+            <span className="save-picker-text"><strong>{t('justSave')}</strong><small>{t('justSaveHint')}</small></span>
+          </button>
+        </div>
+        <form className="save-picker-new" onSubmit={createCollectionAndSave}>
+          <input autoFocus maxLength={50} value={savePicker.newName} onChange={e => setSavePicker(prev => ({ ...prev, newName: e.target.value }))} placeholder={t('newCollectionName')} aria-label={t('newCollectionName')}/>
+          <button className="primary" disabled={busy !== '' || !savePicker.newName.trim()}><Plus size={16}/> {t('createAndSave')}</button>
+        </form>
+        <div className="form-actions-inline"><button type="button" className="secondary" onClick={() => setSavePicker(null)}>{t('cancel')}</button></div>
+      </div>
+    </div>}
     {confirmBox && <ConfirmDialog message={confirmBox.message} confirmLabel={confirmBox.confirmLabel} cancelLabel={t('cancel')} onCancel={() => setConfirmBox(null)} onConfirm={() => { const run = confirmBox.onConfirm; setConfirmBox(null); run(); }}/>}
     {lightbox && <Lightbox
       t={t}
