@@ -719,6 +719,13 @@ export default function App() {
   const profileMap = useMemo(() => new Map([...notifyProfiles, ...profiles, ...groupHistory.authors, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].map(p => [p.id, p])), [notifyProfiles, profiles, groupHistory.authors, searchResults, selectedProfile]);
   const mine = profileMap.get(userId);
   const followingIds = new Set(follows.map(f => f.following_id));
+  // Home feed: "Following" shows my posts, posts by people I follow and posts sent to me
+  // (group posts stay in the Groups tab); "Everyone" shows every post I'm allowed to see.
+  // The choice is remembered per browser.
+  const [feedMode, setFeedMode] = useState(() => { try { return localStorage.getItem('campconnect_feed') === 'everyone' ? 'everyone' : 'following'; } catch { return 'following'; } });
+  const changeFeedMode = mode => { setFeedMode(mode); try { localStorage.setItem('campconnect_feed', mode); } catch { /* storage unavailable */ } };
+  const feedPosts = feedMode === 'everyone' ? posts : posts.filter(post =>
+    post.author_id === userId || followingIds.has(post.author_id) || post.audience === 'selected');
   const followerIds = new Set(followers || []);
   const others = [...new Map([...notifyProfiles, ...profiles, ...groupHistory.authors, ...searchResults, ...(selectedProfile ? [selectedProfile] : [])].filter(p => p.id !== userId).map(p => [p.id, p])).values()];
   const filtered = (query.trim() ? searchResults.filter(p => p.id !== userId) : others)
@@ -1482,8 +1489,11 @@ export default function App() {
           {postAudience === 'group' && <><select aria-label={t('chooseGroup')} value={postGroup} onChange={e => setPostGroup(e.target.value)}><option value="">{t('chooseGroup')}</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select>{groups.length === 0 && <small>{t('createGroupFirst')}</small>}</>}
           {postAudience !== 'school' && <small className="muted">{t('restrictedTextOnly')}</small>}</div>{postImages.length > 0 && <div className="image-previews">{postImages.map((item, i) => <div className="image-preview" key={item.preview}><img src={item.preview} alt=""/><button type="button" className="preview-remove" onClick={() => removePostImage(i)} disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')}><X size={15}/></button></div>)}</div>}<div className="composer-footer"><div className="composer-tools"><button type="button" className="icon-button" disabled={busy !== '' || postAudience !== 'school' || postImages.length >= MAX_IMAGES} onClick={() => postImageInput.current?.click()} aria-label={t('addImage')} title={t('addImage')}><ImagePlus size={20}/></button><input ref={postImageInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden onChange={e => pickImages(e, postImages.length, items => setPostImages(prev => [...prev, ...items]))}/><small>{postAudience === 'school' && `${t('imageCount', { n: postImages.length, max: MAX_IMAGES })} · `}{postText.length}/{MAX_POST}</small></div><button className="primary" disabled={busy !== '' || (!postText.trim() && !postImages.length)}><Send size={16}/> {busy === 'post' ? t('uploading') : t('post')}</button></div></form>
         <div className="section-heading"><h2>{t('latestPosts')}</h2>{loading && <span>{t('loading')}</span>}</div>
-        {!loading && posts.length === 0 && <div className="empty panel">{t('noPosts')}</div>}
-        {posts.map(renderPost)}
+        <div className="collection-chips feed-switch" role="group" aria-label={t('latestPosts')}>
+          {[['following', t('feedFollowing')], ['everyone', t('feedEveryone')]].map(([id, label]) => <button key={id} type="button" className={`chip ${feedMode === id ? 'active' : ''}`} aria-pressed={feedMode === id} onClick={() => changeFeedMode(id)}>{label}</button>)}
+        </div>
+        {!loading && feedPosts.length === 0 && <div className="empty panel">{feedMode === 'following' && posts.length > 0 ? t('noFollowingPosts') : t('noPosts')}</div>}
+        {feedPosts.map(renderPost)}
       </>}
       {tab === 'saved' && <div className="saved-posts">
         <div className="section-heading"><h2>{navTitles.saved}</h2>{savedLoading && <span>{t('loading')}</span>}</div>
