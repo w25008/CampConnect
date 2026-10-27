@@ -7,7 +7,7 @@ A school-only social app for OSFL students. React/Vite provides the frontend; Su
 ## Features in the current source
 
 - Sign up with a confirmed `@osfl.ac.jp` address, sign in, and sign out
-- Publish school-wide, selected-student, or group posts; like and comment only when allowed to see the post, edit/delete your comments, and attach photos, animated GIFs, or built-in stickers
+- Publish school-wide, selected-student, or group posts; like and comment only when allowed to see the post, edit/delete your comments, and attach still photos or built-in stickers
 - Create groups and manage members; new members cannot see earlier posts, and removed members lose access in the app
 - Find members, edit profiles, follow people, and receive notifications
 - Share images on school-wide posts, switch between English and Japanese, and choose light or dark mode
@@ -49,9 +49,9 @@ To save posts for later, apply `supabase/migrations/0016_saved_posts.sql` once a
 
 Saved-post collections are added by `supabase/migrations/0017_saved_collections.sql`. Apply it once after `0016_saved_posts.sql` and deploy the updated frontend. Collections are private to the student who created them; saved posts can be assigned to a collection and filtered from the Saved page.
 
-Comment editing, photo/GIF attachments, and stickers are added by `supabase/migrations/0019_comment_media_and_editing.sql`. Apply it after `0018_username_from_email.sql` and deploy the updated frontend. Comment media uses the existing public image bucket, so the database only permits attachments on school-wide posts; stickers and text comments continue to work on posts with restricted audiences.
+Comment editing, still-photo attachments, and stickers are added by `supabase/migrations/0019_comment_media_and_editing.sql`. Apply it after `0018_username_from_email.sql`. Comment photo attachments are available only on school-wide posts because the existing image bucket has public URLs; stickers and text comments continue to work on posts with restricted audiences. GIFs are not available in comments.
 
-1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. For an existing project, apply any missing migrations after its current version in sequence. The comment-media feature specifically requires `0019_comment_media_and_editing.sql` after `0018_username_from_email.sql`. Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
+1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. For an existing project, apply any missing migrations after its current version in sequence. Comment media requires `0019_comment_media_and_editing.sql` after `0018_username_from_email.sql`. Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
 2. In **Authentication > Sign In / Providers**, keep Email and **Confirm email** enabled. The new school gate checks the confirmed address in `auth.users`. Custom SMTP is configured on the current project; test delivery to a school inbox before inviting more students.
 3. In **Authentication > URL Configuration**, set the Site URL to the public app URL and include production and local URLs in Redirect URLs. The current project uses `https://pulse-sns-nine.vercel.app/` as its Site URL.
 

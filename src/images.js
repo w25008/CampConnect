@@ -41,13 +41,6 @@ export async function uploadImage(bucket, userId, blob) {
   return path;
 }
 
-export async function uploadGif(bucket, userId, file) {
-  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.gif`;
-  const { error } = await supabase.storage.from(bucket).upload(path, file, { contentType: 'image/gif', cacheControl: '31536000' });
-  if (error) throw error;
-  return path;
-}
-
 export async function removeImage(bucket, path) {
   return removeImages(bucket, path ? [path] : []);
 }

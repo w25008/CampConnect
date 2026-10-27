@@ -8,7 +8,8 @@ import { orderVisibleSavedPosts } from './lib/savedPosts.js';
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
-import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, uploadGif, removeImages, postImagePaths } from './images.js';
+import wizardArtwork from './wizard-opening.png';
+import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
 import { handleFromEmail } from './username.js';
@@ -862,7 +863,7 @@ export default function App() {
   // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
   const imageErrorText = err => (/bucket not found|image_path|avatar_path|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errImageSetup') : err?.message || t('errAction'));
   const editErrorText = err => (/image_paths|PGRST202|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errEditSetup') : imageErrorText(err));
-  const commentErrorText = err => (/image_path|sticker_id|comments_body_or_attachment|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errCommentSetup') : imageErrorText(err));
+  const commentErrorText = err => (/image_path|sticker_id|comments_body_or_attachment|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errCommentSetup') : imageErrorText(err));
   // Cleanup is best-effort: a failed deletion must never undo a saved post/photo
   // or hide the original upload/update error. Notices survive data refreshes.
   async function cleanupImages(bucket, paths) {
@@ -885,8 +886,7 @@ export default function App() {
     e.target.value = '';
     if (!file) return;
     if (audience !== 'school') { setError(t('restrictedTextOnly')); return; }
-    if (!isImageFile(file)) { setError(t('errImageType')); return; }
-    if (file.type === 'image/gif' && file.size > 5 * 1024 * 1024) { setError(t('errCommentImageTooLarge')); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { setError(t('errCommentImageType')); return; }
     const image = { file, preview: URL.createObjectURL(file) };
     if (editingComment?.postId === postId) {
       if (editingComment.image?.preview) dropPreviews([editingComment.image]);
@@ -920,7 +920,6 @@ export default function App() {
     setStickerPickerPost('');
   }
   async function uploadCommentImage(file) {
-    if (file.type === 'image/gif') return uploadGif(POST_IMAGE_BUCKET, userId, file);
     return uploadImage(POST_IMAGE_BUCKET, userId, await shrinkImage(file, 1200));
   }
   function startEditComment(comment, postId, audience) {
@@ -1494,7 +1493,7 @@ export default function App() {
             </div>
           </div>;
         })}
-        <input ref={el => { commentImageInputs.current[post.id] = el; }} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={e => chooseCommentImage(e, post.id, post.audience)}/>
+        <input ref={el => { commentImageInputs.current[post.id] = el; }} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={e => chooseCommentImage(e, post.id, post.audience)}/>
         {(commentMedia[post.id]?.image?.preview || commentMedia[post.id]?.stickerId) && <div className="comment-attachment-preview">
           {commentMedia[post.id]?.image?.preview && <div className="comment-image-preview"><img src={commentMedia[post.id].image.preview} alt={t('commentImageAlt')}/><button type="button" className="preview-remove" disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')} onClick={() => removeCommentImage(post.id)}><X size={14}/></button></div>}
           {commentMedia[post.id]?.stickerId && <span className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === commentMedia[post.id].stickerId)?.emoji}</span>}
@@ -1647,7 +1646,16 @@ export default function App() {
       <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div><div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); setSavedRevision(value => value + 1); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
+      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div>{tab === 'feed' && !viewingOther && <div className="home-magic" role="img" aria-label="A wizard sends sparkling magic to the Gaigo and IT College logos">
+        <span className="home-magic-logo home-magic-logo-left"><img src={gaigoLogo} alt="Gaigo"/></span>
+        <span className="home-magic-wizard" aria-hidden="true"><span className="home-wizard"><img src={wizardArtwork} alt=""/></span><span className="home-wand">✦</span></span>
+        <span className="home-magic-logo home-magic-logo-right"><img src={itcollegeLogo} alt="IT College"/></span>
+        <span className="home-magic-star home-magic-star-left" aria-hidden="true">✦</span>
+        <span className="home-magic-star home-magic-star-right" aria-hidden="true">✦</span>
+        <span className="home-magic-star home-magic-star-left-small" aria-hidden="true">✧</span>
+        <span className="home-magic-star home-magic-star-right-small" aria-hidden="true">✧</span>
+        {Array.from({ length: 10 }, (_, index) => <span key={index} className="home-magic-star home-magic-star-extra" aria-hidden="true" style={{ '--star-x': `${12 + index * 8}%`, '--star-y': `${20 + (index * 29) % 65}%`, animationDelay: `${(index % 5) * 0.16}s` }}>✦</span>)}
+      </div>}<div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); setSavedRevision(value => value + 1); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {notice && <div className="error-banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label={t('dismissError')}>x</button></div>}
       {tab === 'feed' && <>

@@ -2,7 +2,6 @@ import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 let removeResult = { data: [], error: null };
-let uploadResult = { data: [], error: null };
 let rejection;
 const requests = [];
 mock.module('./lib/supabase.js', {
@@ -11,11 +10,6 @@ mock.module('./lib/supabase.js', {
       storage: {
         from(bucket) {
           return {
-            async upload(path, file, options) {
-              requests.push({ bucket, path, file, options });
-              if (rejection) throw rejection;
-              return uploadResult;
-            },
             async remove(paths) {
               requests.push({ bucket, paths });
               if (rejection) throw rejection;
@@ -27,25 +21,12 @@ mock.module('./lib/supabase.js', {
     },
   },
 });
-const { removeImage, removeImages, uploadGif } = await import('./images.js');
+const { removeImage, removeImages } = await import('./images.js');
 
 test.beforeEach(() => {
   requests.length = 0;
   removeResult = { data: [], error: null };
-  uploadResult = { data: [], error: null };
   rejection = undefined;
-});
-
-test('uploads GIF comments without converting away animation', async () => {
-  const file = { type: 'image/gif', size: 1024 };
-  const path = await uploadGif('post-images', 'student-id', file);
-  assert.match(path, /^student-id\/\d+-[a-z0-9]+\.gif$/);
-  assert.deepEqual(requests, [{
-    bucket: 'post-images',
-    path,
-    file,
-    options: { contentType: 'image/gif', cacheControl: '31536000' },
-  }]);
 });
 
 test('removes only the supplied images and skips empty cleanup', async () => {
