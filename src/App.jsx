@@ -8,7 +8,7 @@ import { orderVisibleSavedPosts } from './lib/savedPosts.js';
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
-import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
+import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, uploadGif, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
 import { handleFromEmail } from './username.js';
@@ -18,6 +18,12 @@ const MAX_POST = 500;
 const MAX_COMMENT = 300;
 const MAX_MESSAGE = 1000;
 const MAX_IMAGES = 4; // per post (enforced in supabase/migrations/0006_post_editing.sql)
+const COMMENT_STICKERS = [
+  { id: 'heart', emoji: '❤️' }, { id: 'laugh', emoji: '😂' }, { id: 'party', emoji: '🎉' },
+  { id: 'love', emoji: '🥰' }, { id: 'thumbs-up', emoji: '👍' }, { id: 'clap', emoji: '👏' },
+  { id: 'flower', emoji: '🌸' }, { id: 'sparkles', emoji: '✨' }, { id: 'cat', emoji: '🐱' },
+  { id: 'rainbow', emoji: '🌈' },
+];
 // Only school accounts may join. The database enforces this too (supabase/migrations/0002_restrict_email_domain.sql).
 const SCHOOL_DOMAIN = 'osfl.ac.jp';
 const isSchoolEmail = value => value.trim().toLowerCase().endsWith(`@${SCHOOL_DOMAIN}`);
@@ -255,6 +261,10 @@ export default function App() {
   const [verifiedRecipientFingerprint, setVerifiedRecipientFingerprint] = useState('');
   const [blockedIds, setBlockedIds] = useState([]);
   const [commentText, setCommentText] = useState({});
+  const [commentMedia, setCommentMedia] = useState({});
+  const [editingComment, setEditingComment] = useState(null);
+  const [stickerPickerPost, setStickerPickerPost] = useState('');
+  const commentImageInputs = useRef({});
   const [openComments, setOpenComments] = useState({});
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(false);
@@ -469,9 +479,9 @@ export default function App() {
   const loadComments = useCallback(async postId => {
     setLoadingComments(prev => ({ ...prev, [postId]: true }));
     const { data, error: err } = await supabase.from('comments')
-      .select('id,post_id,author_id,body,created_at')
+      .select('id,post_id,author_id,body,image_path,sticker_id,created_at')
       .eq('post_id', postId).order('created_at', { ascending: false }).limit(100);
-    if (err) { setError(err.message); }
+    if (err) { setError(commentErrorText(err)); }
     else {
       const rows = (data || []).reverse();
       setCommentsByPost(prev => ({ ...prev, [postId]: rows }));
@@ -852,6 +862,7 @@ export default function App() {
   // Storage missing (0005 not run yet) shows a setup hint instead of a raw error.
   const imageErrorText = err => (/bucket not found|image_path|avatar_path|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errImageSetup') : err?.message || t('errAction'));
   const editErrorText = err => (/image_paths|PGRST202|PGRST204|42501|42703/i.test(`${err?.message} ${err?.code}`) ? t('errEditSetup') : imageErrorText(err));
+  const commentErrorText = err => (/image_path|sticker_id|comments_body_or_attachment|PGRST204|42703/i.test(`${err?.message} ${err?.code}`) ? t('errCommentSetup') : imageErrorText(err));
   // Cleanup is best-effort: a failed deletion must never undo a saved post/photo
   // or hide the original upload/update error. Notices survive data refreshes.
   async function cleanupImages(bucket, paths) {
@@ -869,6 +880,61 @@ export default function App() {
     if (room > 0) add(files.slice(0, room).map(file => ({ file, preview: URL.createObjectURL(file) })));
   }
   const dropPreviews = items => items.forEach(item => URL.revokeObjectURL(item.preview));
+  function chooseCommentImage(e, postId, audience) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (audience !== 'school') { setError(t('restrictedTextOnly')); return; }
+    if (!isImageFile(file)) { setError(t('errImageType')); return; }
+    if (file.type === 'image/gif' && file.size > 5 * 1024 * 1024) { setError(t('errCommentImageTooLarge')); return; }
+    const image = { file, preview: URL.createObjectURL(file) };
+    if (editingComment?.postId === postId) {
+      if (editingComment.image?.preview) dropPreviews([editingComment.image]);
+      setEditingComment(prev => ({ ...prev, image, imagePath: '' }));
+    } else {
+      const previous = commentMedia[postId]?.image;
+      if (previous?.preview) dropPreviews([previous]);
+      setCommentMedia(prev => ({ ...prev, [postId]: { ...prev[postId], image } }));
+    }
+  }
+  function removeCommentImage(postId) {
+    if (editingComment?.postId === postId) {
+      if (editingComment.image?.preview) dropPreviews([editingComment.image]);
+      setEditingComment(prev => ({ ...prev, image: null, imagePath: '' }));
+      return;
+    }
+    const image = commentMedia[postId]?.image;
+    if (image?.preview) dropPreviews([image]);
+    setCommentMedia(prev => ({ ...prev, [postId]: { ...prev[postId], image: null } }));
+  }
+  function chooseCommentSticker(postId, stickerId) {
+    if (editingComment?.postId === postId) {
+      setEditingComment(prev => ({ ...prev, stickerId: prev.stickerId === stickerId ? '' : stickerId }));
+      setStickerPickerPost('');
+      return;
+    }
+    setCommentMedia(prev => ({
+      ...prev,
+      [postId]: { ...prev[postId], stickerId: prev[postId]?.stickerId === stickerId ? '' : stickerId },
+    }));
+    setStickerPickerPost('');
+  }
+  async function uploadCommentImage(file) {
+    if (file.type === 'image/gif') return uploadGif(POST_IMAGE_BUCKET, userId, file);
+    return uploadImage(POST_IMAGE_BUCKET, userId, await shrinkImage(file, 1200));
+  }
+  function startEditComment(comment, postId, audience) {
+    if (editingComment?.image?.preview) dropPreviews([editingComment.image]);
+    setEditingComment({
+      id: comment.id, postId, body: comment.body, imagePath: comment.image_path || '',
+      stickerId: comment.sticker_id || '', image: null, audience,
+    });
+    setStickerPickerPost('');
+  }
+  function cancelEditComment() {
+    if (editingComment?.image?.preview) dropPreviews([editingComment.image]);
+    setEditingComment(null);
+  }
   const removePostImage = index => setPostImages(prev => { dropPreviews([prev[index]]); return prev.filter((_, i) => i !== index); });
   async function uploadPostImages(items) {
     const paths = [];
@@ -1076,18 +1142,72 @@ export default function App() {
     } catch (err) { setError(imageErrorText(err)); }
     finally { setBusy(''); }
   }
-  function addComment(e, id) {
-    e.preventDefault(); const body = (commentText[id] || '').trim();
-    if (!body || body.length > MAX_COMMENT) return;
+  async function addComment(e, id, audience) {
+    e.preventDefault();
+    const body = (commentText[id] || '').trim();
+    const media = commentMedia[id] || {};
+    if ((!body && !media.image && !media.stickerId) || body.length > MAX_COMMENT) return;
+    if (media.image && audience !== 'school') { setError(t('restrictedTextOnly')); return; }
     setBusy('comment'); setError('');
-    supabase.from('comments').insert({ post_id: id, author_id: userId, body }).then(async ({ error: err }) => {
-      if (err) setError(err.message);
-      else {
-        setCommentText(prev => ({ ...prev, [id]: '' }));
-        await Promise.all([loadComments(id), loadCommunity()]);
-      }
-      setBusy('');
-    });
+    let imagePath = null;
+    let saved = false;
+    try {
+      if (media.image) imagePath = await uploadCommentImage(media.image.file);
+      const { error: err } = await supabase.from('comments').insert({
+        post_id: id, author_id: userId, body, image_path: imagePath, sticker_id: media.stickerId || null,
+      });
+      if (err) throw err;
+      saved = true;
+      if (media.image) dropPreviews([media.image]);
+      setCommentText(prev => ({ ...prev, [id]: '' }));
+      setCommentMedia(prev => ({ ...prev, [id]: { image: null, stickerId: '' } }));
+      await Promise.all([loadComments(id), loadCommunity()]);
+    } catch (err) {
+      if (imagePath && !saved) await cleanupImages(POST_IMAGE_BUCKET, [imagePath]);
+      setError(commentErrorText(err));
+    } finally { setBusy(''); }
+  }
+  async function saveComment(e) {
+    e.preventDefault();
+    const current = editingComment;
+    if (!current) return;
+    const body = current.body.trim();
+    if ((!body && !current.image && !current.imagePath && !current.stickerId) || body.length > MAX_COMMENT) return;
+    if ((current.image || current.imagePath) && current.audience !== 'school') { setError(t('restrictedTextOnly')); return; }
+    setBusy('comment-edit'); setError('');
+    let uploadedPath = '';
+    let saved = false;
+    const oldImagePath = current.imagePath;
+    try {
+      if (current.image) uploadedPath = await uploadCommentImage(current.image.file);
+      const { data, error: err } = await supabase.from('comments')
+        .update({
+          body, image_path: uploadedPath || current.imagePath || null, sticker_id: current.stickerId || null,
+        })
+        .eq('id', current.id).eq('author_id', userId).select('id');
+      if (err) throw err;
+      if (!data?.length) throw new Error(t('errAction'));
+      saved = true;
+      if (current.image?.preview) dropPreviews([current.image]);
+      const nextImagePath = uploadedPath || current.imagePath || '';
+      if (oldImagePath && oldImagePath !== nextImagePath) await cleanupImages(POST_IMAGE_BUCKET, [oldImagePath]);
+      setEditingComment(null);
+      await Promise.all([loadComments(current.postId), loadCommunity()]);
+    } catch (err) {
+      if (uploadedPath && !saved) await cleanupImages(POST_IMAGE_BUCKET, [uploadedPath]);
+      setError(commentErrorText(err));
+    } finally { setBusy(''); }
+  }
+  async function deleteComment(comment, postId) {
+    setBusy('comment-delete'); setError('');
+    try {
+      const { data, error: err } = await supabase.from('comments').delete().eq('id', comment.id).eq('author_id', userId).select('id');
+      if (err) throw err;
+      if (!data?.length) throw new Error(t('errAction'));
+      if (comment.image_path) await cleanupImages(POST_IMAGE_BUCKET, [comment.image_path]);
+      await Promise.all([loadComments(postId), loadCommunity()]);
+    } catch (err) { setError(commentErrorText(err)); }
+    finally { setBusy(''); }
   }
   async function sendMessage(e) {
     e.preventDefault(); const body = messageText.trim();
@@ -1335,7 +1455,58 @@ export default function App() {
           </div>}
         </div>
       </div>
-      {openComments[post.id] && <div className="comments"><h3>{t('comments')}</h3>{loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}{!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}{postComments.map(c => <div className="comment" key={c.id}><PersonLink {...linkProps(c.author_id)}><Avatar profile={profileMap.get(c.author_id)}/></PersonLink><div><PersonLink {...linkProps(c.author_id)}><strong>{display(profileMap.get(c.author_id))}</strong></PersonLink><small> - {when(c.created_at)}</small>{c.author_id !== userId && <button type="button" className="icon-button report-comment" aria-label={t('reportComment')} title={t('reportComment')} onClick={() => setReportTarget({ type: 'comment', id: c.id })}><Flag size={13}/></button>}<p>{c.body}</p></div></div>)}<form onSubmit={e => addComment(e, post.id)} className="comment-form"><input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/><button className="primary" disabled={busy !== '' || !commentText[post.id]?.trim()} aria-label={t('sendComment')}><Send size={16}/></button></form></div>}
+      {openComments[post.id] && <div className="comments">
+        <h3>{t('comments')}</h3>
+        {loadingComments[post.id] && <p className="muted">{t('loadingComments')}</p>}
+        {!loadingComments[post.id] && postComments.length === 0 && <p className="muted">{t('noComments')}</p>}
+        {postComments.map(c => {
+          const isEditing = editingComment?.id === c.id;
+          const pickerKey = isEditing ? `edit:${c.id}` : post.id;
+          const selectedSticker = isEditing ? editingComment.stickerId : '';
+          return <div className="comment" key={c.id}>
+            <PersonLink {...linkProps(c.author_id)}><Avatar profile={profileMap.get(c.author_id)}/></PersonLink>
+            <div className="comment-content">
+              <PersonLink {...linkProps(c.author_id)}><strong>{display(profileMap.get(c.author_id))}</strong></PersonLink>
+              <small> - {when(c.created_at)}</small>
+              {c.author_id === userId && !isEditing && <span className="comment-own-actions">
+                <button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('editComment')} title={t('editComment')} onClick={() => startEditComment(c, post.id, post.audience)}><Pencil size={14}/></button>
+                <button type="button" className="icon-button danger-text" disabled={busy !== ''} aria-label={t('deleteComment')} title={t('deleteComment')} onClick={() => askConfirm(t('confirmDeleteComment'), t('deleteComment'), () => deleteComment(c, post.id))}><Trash2 size={14}/></button>
+              </span>}
+              {c.author_id !== userId && <button type="button" className="icon-button report-comment" aria-label={t('reportComment')} title={t('reportComment')} onClick={() => setReportTarget({ type: 'comment', id: c.id })}><Flag size={13}/></button>}
+              {isEditing ? <form className="comment-edit-form" onSubmit={saveComment}>
+                <input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={editingComment.body} onChange={e => setEditingComment(prev => ({ ...prev, body: e.target.value }))}/>
+                {(editingComment.image?.preview || editingComment.imagePath || editingComment.stickerId) && <div className="comment-attachment-preview">
+                  {(editingComment.image?.preview || editingComment.imagePath) && <div className="comment-image-preview"><img src={editingComment.image?.preview || publicUrl(POST_IMAGE_BUCKET, editingComment.imagePath)} alt={t('commentImageAlt')}/><button type="button" className="preview-remove" disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')} onClick={() => removeCommentImage(post.id)}><X size={14}/></button></div>}
+                  {editingComment.stickerId && <span className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === editingComment.stickerId)?.emoji}</span>}
+                </div>}
+                <div className="comment-edit-actions">
+                  <button type="button" className="icon-button" disabled={busy !== '' || post.audience !== 'school'} aria-label={t('addImage')} title={t('addImage')} onClick={() => commentImageInputs.current[post.id]?.click()}><ImagePlus size={17}/></button>
+                  <button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('addSticker')} title={t('addSticker')} aria-expanded={stickerPickerPost === pickerKey} onClick={() => setStickerPickerPost(stickerPickerPost === pickerKey ? '' : pickerKey)}><Sparkles size={17}/></button>
+                  <button type="button" className="secondary" disabled={busy !== ''} onClick={cancelEditComment}>{t('cancel')}</button>
+                  <button className="primary" disabled={busy !== '' || (!editingComment.body.trim() && !editingComment.image && !editingComment.imagePath && !editingComment.stickerId)}>{busy === 'comment-edit' ? t('saving') : t('saveComment')}</button>
+                </div>
+                {stickerPickerPost === pickerKey && <div className="comment-sticker-picker" role="group" aria-label={t('addSticker')}>{COMMENT_STICKERS.map(sticker => <button key={sticker.id} type="button" className={selectedSticker === sticker.id ? 'selected' : ''} disabled={busy !== ''} aria-label={`${t('addSticker')} ${sticker.emoji}`} title={sticker.emoji} onClick={() => chooseCommentSticker(post.id, sticker.id)}>{sticker.emoji}</button>)}</div>}
+              </form> : <>
+                {c.body && <p>{c.body}</p>}
+                {c.image_path && <img className="comment-image" src={publicUrl(POST_IMAGE_BUCKET, c.image_path)} alt={t('commentImageAlt')} loading="lazy"/>}
+                {c.sticker_id && <div className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === c.sticker_id)?.emoji}</div>}
+              </>}
+            </div>
+          </div>;
+        })}
+        <input ref={el => { commentImageInputs.current[post.id] = el; }} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={e => chooseCommentImage(e, post.id, post.audience)}/>
+        {(commentMedia[post.id]?.image?.preview || commentMedia[post.id]?.stickerId) && <div className="comment-attachment-preview">
+          {commentMedia[post.id]?.image?.preview && <div className="comment-image-preview"><img src={commentMedia[post.id].image.preview} alt={t('commentImageAlt')}/><button type="button" className="preview-remove" disabled={busy !== ''} aria-label={t('removeImage')} title={t('removeImage')} onClick={() => removeCommentImage(post.id)}><X size={14}/></button></div>}
+          {commentMedia[post.id]?.stickerId && <span className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === commentMedia[post.id].stickerId)?.emoji}</span>}
+        </div>}
+        {stickerPickerPost === post.id && <div className="comment-sticker-picker" role="group" aria-label={t('addSticker')}>{COMMENT_STICKERS.map(sticker => <button key={sticker.id} type="button" className={commentMedia[post.id]?.stickerId === sticker.id ? 'selected' : ''} disabled={busy !== ''} aria-label={`${t('addSticker')} ${sticker.emoji}`} title={sticker.emoji} onClick={() => chooseCommentSticker(post.id, sticker.id)}>{sticker.emoji}</button>)}</div>}
+        <form onSubmit={e => addComment(e, post.id, post.audience)} className="comment-form">
+          <input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/>
+          <button type="button" className="icon-button" disabled={busy !== '' || post.audience !== 'school'} aria-label={t('addImage')} title={t('addImage')} onClick={() => commentImageInputs.current[post.id]?.click()}><ImagePlus size={18}/></button>
+          <button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('addSticker')} title={t('addSticker')} aria-expanded={stickerPickerPost === post.id} onClick={() => setStickerPickerPost(stickerPickerPost === post.id ? '' : post.id)}><Sparkles size={18}/></button>
+          <button className="primary" disabled={busy !== '' || (!commentText[post.id]?.trim() && !commentMedia[post.id]?.image && !commentMedia[post.id]?.stickerId)} aria-label={t('sendComment')}><Send size={16}/></button>
+        </form>
+      </div>}
     </article>;
   }
   function renderProfile() {

@@ -7,7 +7,7 @@ A school-only social app for OSFL students. React/Vite provides the frontend; Su
 ## Features in the current source
 
 - Sign up with a confirmed `@osfl.ac.jp` address, sign in, and sign out
-- Publish school-wide, selected-student, or group posts; like and comment only when allowed to see the post
+- Publish school-wide, selected-student, or group posts; like and comment only when allowed to see the post, edit/delete your comments, and attach photos, animated GIFs, or built-in stickers
 - Create groups and manage members; new members cannot see earlier posts, and removed members lose access in the app
 - Find members, edit profiles, follow people, and receive notifications
 - Share images on school-wide posts, switch between English and Japanese, and choose light or dark mode
@@ -49,7 +49,9 @@ To save posts for later, apply `supabase/migrations/0016_saved_posts.sql` once a
 
 Saved-post collections are added by `supabase/migrations/0017_saved_collections.sql`. Apply it once after `0016_saved_posts.sql` and deploy the updated frontend. Collections are private to the student who created them; saved posts can be assigned to a collection and filtered from the Saved page.
 
-1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. The existing CampConnect project has been manually updated through `0016`; apply `0017_saved_collections.sql` before deploying this feature. For a project still at `0007`, run `0008` through `0017` in order, each once ([0008](./supabase/migrations/0008_school_audiences_and_encrypted_chat.sql) is the big one). Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
+Comment editing, photo/GIF attachments, and stickers are added by `supabase/migrations/0019_comment_media_and_editing.sql`. Apply it after `0018_username_from_email.sql` and deploy the updated frontend. Comment media uses the existing public image bucket, so the database only permits attachments on school-wide posts; stickers and text comments continue to work on posts with restricted audiences.
+
+1. For a **new** Supabase project, run the numbered SQL files in [supabase/migrations/](./supabase/migrations/) in order. For an existing project, apply any missing migrations after its current version in sequence. The comment-media feature specifically requires `0019_comment_media_and_editing.sql` after `0018_username_from_email.sql`. Do not rerun older migrations after `0008`; some older scripts replace policies with earlier rules.
 2. In **Authentication > Sign In / Providers**, keep Email and **Confirm email** enabled. The new school gate checks the confirmed address in `auth.users`. Custom SMTP is configured on the current project; test delivery to a school inbox before inviting more students.
 3. In **Authentication > URL Configuration**, set the Site URL to the public app URL and include production and local URLs in Redirect URLs. The current project uses `https://pulse-sns-nine.vercel.app/` as its Site URL.
 
@@ -79,7 +81,7 @@ Open the URL Vite prints. Run `npm run build` before deployment. Never put a Sup
 
 ## Deploy for free
 
-1. Apply all migrations through `0017` to the database before deploying the new frontend. New code depends on the image-storage, saved-post, and collection policies.
+1. Apply the required migrations through `0019` to the database before deploying the new frontend. New code depends on the image-storage, saved-post, collection, and comment-media policies.
 2. Build with `npm run build`. Vercel deploys automatically when `main` is pushed; check the deployment finished before inviting students.
 3. Verify the live app with at least three confirmed school accounts. An unconfirmed or external address must not read community data; nonmembers must not fetch selected/group posts, comments, likes, or counts through direct API calls. New group members must not see old posts, and removed members must lose future database access.
 4. Set up chat keys for two accounts. Confirm only ciphertext is stored for new DMs, both participants decrypt, a third account cannot fetch the row, and a fresh browser restores with the recovery code. Test a key reset and legacy plaintext labeling. Test desktop and scrolled mobile screens.
