@@ -7,6 +7,7 @@ A school-only social app for OSFL students. React/Vite provides the frontend; Su
 ## Features in the current source
 
 - Sign up with a confirmed `@osfl.ac.jp` address, sign in, and sign out
+- Reset a forgotten password by email ("Forgot your password?" on the sign-in screen), and change the password from your own profile page (asks for the current password first). The reset link returns to the page it was requested from, so that URL must be listed in Supabase **Authentication > URL Configuration > Redirect URLs**
 - Publish school-wide, selected-student, or group posts; like and comment only when allowed to see the post, edit/delete your comments, and attach still photos or built-in stickers
 - Create groups and manage members; new members cannot see earlier posts, and removed members lose access in the app
 - Find members, edit profiles, follow people, and receive notifications

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder } from 'lucide-react';
-import { supabase } from './lib/supabase.js';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound } from 'lucide-react';
+import { supabase, openedFromRecoveryLink } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { buildAudienceEditPayload } from './lib/postAudience.js';
@@ -131,8 +131,12 @@ function LangToggle({ t, lang, onChange }) {
   </div>;
 }
 
+function AuthTop({ t, lang, onChangeLang, theme, onToggleTheme }) {
+  return <div className="auth-top"><div className="auth-logos"><img className="auth-side-logo" src={gaigoLogo} alt="Gaigo"/><img className="auth-logo" src={loginLogo} alt="CampConnect"/><img className="auth-side-logo" src={itcollegeLogo} alt="IT College"/></div><div className="prefs"><LangToggle t={t} lang={lang} onChange={onChangeLang}/><ThemeToggle t={t} theme={theme} onToggle={onToggleTheme}/></div></div>;
+}
 function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
   const [signup, setSignup] = useState(false);
+  const [forgot, setForgot] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -140,6 +144,17 @@ function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
   const [error, setError] = useState('');
   // The username is the school email ID; the database sets it, this is just the preview.
   const h = handleFromEmail(email);
+  async function sendReset(e) {
+    e.preventDefault(); setError('');
+    if (!isSchoolEmail(email)) { setError(t('errSchoolEmail', { example: `w25009@${SCHOOL_DOMAIN}` })); return; }
+    setBusy(true);
+    // The link in the email returns here; App then shows the new-password screen.
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}${window.location.pathname}` });
+    setBusy(false);
+    if (err) { setError(err.message || t('errContinue')); return; }
+    // Same message whether or not the address has an account, so this can't be used to probe emails.
+    notify(t('resetEmailSent')); setForgot(false);
+  }
   async function submit(e) {
     e.preventDefault(); setError('');
     if (!isSchoolEmail(email)) { setError(t('errSchoolEmail', { example: `w25009@${SCHOOL_DOMAIN}` })); return; }
@@ -162,8 +177,20 @@ function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
     }
     finally { setBusy(false); }
   }
+  const top = <AuthTop t={t} lang={lang} onChangeLang={onChangeLang} theme={theme} onToggleTheme={onToggleTheme}/>;
+  if (forgot) return <div className="auth-wrap"><div className="auth-card">
+    {top}
+    <h1 lang={lang}>{t('forgotTitle')}</h1>
+    <p className="muted">{t('forgotSubtitle')}</p>
+    <form className="stack-form" onSubmit={sendReset}>
+      <label>{t('schoolEmail')}<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={`w25000@${SCHOOL_DOMAIN}`} /></label>
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <button className="primary" disabled={busy}>{busy ? t('pleaseWait') : t('sendResetLink')}</button>
+    </form>
+    <button className="text-button" onClick={() => { setForgot(false); setError(''); }}>{t('backToSignIn')}</button>
+  </div></div>;
   return <div className="auth-wrap"><div className="auth-card">
-    <div className="auth-top"><div className="auth-logos"><img className="auth-side-logo" src={gaigoLogo} alt="Gaigo"/><img className="auth-logo" src={loginLogo} alt="CampConnect"/><img className="auth-side-logo" src={itcollegeLogo} alt="IT College"/></div><div className="prefs"><LangToggle t={t} lang={lang} onChange={onChangeLang}/><ThemeToggle t={t} theme={theme} onToggle={onToggleTheme}/></div></div>
+    {top}
     <h1 lang={lang}>{signup ? t('createAccountTitle') : t('tagline')}</h1>
     {signup && <p className="muted">{t('signupSubtitle')}</p>}
     <form className="stack-form" onSubmit={submit}>
@@ -174,13 +201,41 @@ function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
       {error && <p className="error-text" role="alert">{error}</p>}
       <button className="primary" disabled={busy}>{busy ? t('pleaseWait') : signup ? t('createAccount') : t('signIn')}</button>
     </form>
+    {!signup && <button className="text-button" onClick={() => { setForgot(true); setError(''); }}>{t('forgotPassword')}</button>}
     <button className="text-button" onClick={() => { setSignup(!signup); setError(''); }}>{signup ? t('haveAccount') : t('newHere')}</button>
+  </div></div>;
+}
+// Shown after opening the link from a password-reset email: the user is signed in only to choose a new password.
+function NewPassword({ t, lang, onChangeLang, theme, onToggleTheme, onDone }) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(e) {
+    e.preventDefault(); setError('');
+    if (password !== confirm) { setError(t('errPasswordMismatch')); return; }
+    setBusy(true);
+    const { error: err } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (err) { setError(err.message || t('errContinue')); return; }
+    onDone();
+  }
+  return <div className="auth-wrap"><div className="auth-card">
+    <AuthTop t={t} lang={lang} onChangeLang={onChangeLang} theme={theme} onToggleTheme={onToggleTheme}/>
+    <h1 lang={lang}>{t('newPasswordTitle')}</h1>
+    <form className="stack-form" onSubmit={submit}>
+      <label>{t('newPassword')}<input required type="password" minLength={6} autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} /></label>
+      <label>{t('confirmPassword')}<input required type="password" minLength={6} autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} /></label>
+      {error && <p className="error-text" role="alert">{error}</p>}
+      <button className="primary" disabled={busy}>{busy ? t('pleaseWait') : t('savePassword')}</button>
+    </form>
   </div></div>;
 }
 
 export default function App() {
   const [session, setSession] = useState(null);
   const [checking, setChecking] = useState(true);
+  const [recovering, setRecovering] = useState(openedFromRecoveryLink); // came from a password-reset email
   const [tab, setTab] = useState('feed');
   const [profiles, setProfiles] = useState([]);
   const [posts, setPosts] = useState([]);
@@ -294,6 +349,8 @@ export default function App() {
   const [profileView, setProfileView] = useState({ id: '', data: null, posts: [], followers: 0, following: 0, loading: false });
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
   const [flash, setFlash] = useState('');
   const profileRequest = useRef(0);
   useEffect(() => { if (!flash) return undefined; const timer = setTimeout(() => setFlash(''), 3000); return () => clearTimeout(timer); }, [flash]);
@@ -311,8 +368,8 @@ export default function App() {
     supabase.auth.getSession().then(({ data, error: err }) => {
       if (active) { if (err) setError(err.message); setSession(data.session); setChecking(false); }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, next) => {
-      if (active) { setSession(next); setChecking(false); }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, next) => {
+      if (active) { if (event === 'PASSWORD_RECOVERY') setRecovering(true); setSession(next); setChecking(false); }
     });
     return () => { active = false; subscription.unsubscribe(); };
   }, []);
@@ -1384,6 +1441,21 @@ export default function App() {
     setEditing(false); setFlash(t('profileSaved'));
     await Promise.all([loadProfile(userId), loadCommunity()]);
   }
+  const closePasswordForm = () => { setChangingPassword(false); setPasswordForm({ current: '', next: '', confirm: '' }); };
+  async function changePassword(e) {
+    e.preventDefault(); setError('');
+    const { current, next, confirm } = passwordForm;
+    if (next !== confirm) { setError(t('errPasswordMismatch')); return; }
+    setBusy('password');
+    try {
+      // Check the current password first, so an unattended signed-in device can't be used to take over the account.
+      const check = await supabase.auth.signInWithPassword({ email: session.user.email, password: current });
+      if (check.error) { setError(t('errWrongPassword')); return; }
+      const { error: err } = await supabase.auth.updateUser({ password: next });
+      if (err) { setError(err.message || t('errAction')); return; }
+      closePasswordForm(); setFlash(t('passwordChanged'));
+    } finally { setBusy(''); }
+  }
   // A person's avatar + name, clickable to open their profile.
   const linkProps = id => ({ onOpen: () => openProfile(id), title: t('viewProfile') });
   function renderPost(post) {
@@ -1532,7 +1604,7 @@ export default function App() {
           </div>
           <div className="profile-actions">
             {isMe
-              ? !editing && <button className="secondary" onClick={startEdit}><Pencil size={16}/> {t('editProfile')}</button>
+              ? <>{!editing && <button className="secondary" onClick={startEdit}><Pencil size={16}/> {t('editProfile')}</button>}{!changingPassword && <button className="secondary" onClick={() => setChangingPassword(true)}><KeyRound size={16}/> {t('changePassword')}</button>}</>
               : <><button className={followingIds.has(p.id) ? 'secondary' : 'primary'} disabled={busy !== ''} onClick={() => toggleFollow(p.id)}>{followingIds.has(p.id) ? <UserCheck size={16}/> : <UserPlus size={16}/>} {followingIds.has(p.id) ? t('following') : t('follow')}</button><button className="secondary" onClick={() => openConversation(p)}><Mail size={16}/> {t('message')}</button></>}
           </div>
         </div>
@@ -1558,6 +1630,15 @@ export default function App() {
           <label className="full">{t('aboutMe')}<textarea rows={3} maxLength={300} value={form.bio} onChange={setField('bio')} placeholder={t('bioPlaceholder')}/><small>{form.bio.length}/300</small></label>
         </div>
         <div className="form-actions"><button type="button" className="secondary" onClick={() => setEditing(false)}>{t('cancel')}</button><button className="primary" disabled={busy !== ''}>{busy === 'profile' ? t('saving') : t('saveProfile')}</button></div>
+      </form>}
+      {isMe && changingPassword && <form className="profile-form panel" onSubmit={changePassword}>
+        <h2>{t('changePassword')}</h2>
+        <div className="form-grid">
+          <label className="full">{t('currentPassword')}<input required type="password" autoComplete="current-password" value={passwordForm.current} onChange={e => setPasswordForm(prev => ({ ...prev, current: e.target.value }))}/></label>
+          <label>{t('newPassword')}<input required type="password" minLength={6} autoComplete="new-password" value={passwordForm.next} onChange={e => setPasswordForm(prev => ({ ...prev, next: e.target.value }))}/></label>
+          <label>{t('confirmPassword')}<input required type="password" minLength={6} autoComplete="new-password" value={passwordForm.confirm} onChange={e => setPasswordForm(prev => ({ ...prev, confirm: e.target.value }))}/></label>
+        </div>
+        <div className="form-actions"><button type="button" className="secondary" onClick={closePasswordForm}>{t('cancel')}</button><button className="primary" disabled={busy !== ''}>{busy === 'password' ? t('saving') : t('savePassword')}</button></div>
       </form>}
       <div className="section-heading"><h2>{t('postsCount')}</h2></div>
       {profileView.posts.length === 0 && <div className="empty panel">{t('noProfilePosts')}</div>}
@@ -1634,6 +1715,7 @@ export default function App() {
   });
   if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>{t('connectDbTitle')}</h1><p className="muted">{t('connectDbBody')}</p></div></div>;
   if (checking) return <div className="center-state">{t('loadingApp')}</div>;
+  if (session && recovering) return <><NewPassword t={t} lang={lang} onChangeLang={changeLang} theme={theme} onToggleTheme={toggleTheme} onDone={() => { setRecovering(false); window.history.replaceState(null, '', window.location.pathname); setFlash(t('passwordChanged')); }}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
   if (!session) return <><Auth notify={setNotice} t={t} lang={lang} onChangeLang={changeLang} theme={theme} onToggleTheme={toggleTheme}/>{notice && <div className="toast" role="status">{notice}</div>}</>;
   return <div className="app-shell">
     <aside className="sidebar">
