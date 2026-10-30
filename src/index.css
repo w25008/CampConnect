@@ -304,3 +304,18 @@ button,input,textarea,select{font:inherit}
 @media(max-width:560px){.home-magic{height:54px;margin:0 4px}.home-magic-logo{flex-basis:38px;width:38px;height:38px}.home-magic-wizard{width:36px;height:38px}.home-wizard{width:42px;height:42px}.home-wand{right:0;top:0;font-size:16px}.home-magic-star{font-size:14px}.home-magic-star-left-small,.home-magic-star-right-small{font-size:10px}}
 @keyframes home-star-scatter{0%{left:50%;top:50%;opacity:0;transform:scale(.3) rotate(0)}12%{opacity:1}100%{left:var(--star-x);top:var(--star-y);opacity:0;transform:scale(.15) rotate(140deg)}}
 @media(prefers-reduced-motion:reduce){.home-magic-logo,.home-magic-wizard,.home-wand,.home-magic-star{animation:none!important}.home-magic-logo{opacity:.95;transform:none}.home-magic-star{display:none}}
+/* Google Translate picker */
+.prefs{flex-wrap:wrap}
+.translate-picker{display:inline-flex;align-items:center;gap:6px;min-width:0;padding:5px 10px;background:var(--input);border:1px solid var(--border);border-radius:999px;color:var(--muted);cursor:pointer}
+.translate-picker:focus-within{outline:2px solid var(--accent-soft);outline-offset:2px}
+.translate-picker select{min-width:0;max-width:150px;border:0;background:transparent;color:var(--text);font:inherit;font-size:.75rem;font-weight:700;cursor:pointer;outline:0}
+.translate-picker select option{background:var(--surface);color:var(--text)}
+.translate-picker.failed{border-color:var(--error-border)}
+.sidebar .translate-picker{order:3;flex-basis:100%;background:var(--nav-selected);border-color:var(--nav-border);color:var(--nav-muted)}
+.sidebar .translate-picker select{flex:1;max-width:none;color:var(--nav-text)}
+.sidebar .translate-picker select option{color:var(--text)}
+@media(max-width:800px){.sidebar .translate-picker{flex-basis:auto;order:0}.sidebar .translate-picker select{max-width:110px}}
+/* Hide Google's own toolbar and hover tooltips; our picker replaces them */
+body>.skiptranslate,iframe.skiptranslate,.goog-te-banner-frame,#goog-gt-tt,.goog-te-balloon-frame{display:none!important}
+body{top:0!important}
+.goog-text-highlight{background:none!important;box-shadow:none!important}

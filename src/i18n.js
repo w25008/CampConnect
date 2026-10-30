@@ -2,6 +2,9 @@
 const STRINGS = {
   en: {
     language: 'Language',
+    translatePage: 'Translate page (Google Translate)',
+    translateOriginal: 'Translate…',
+    translateFailed: 'Google Translate could not be loaded. Check your connection and try again.',
     lightMode: 'Switch to light mode',
     darkMode: 'Switch to dark mode',
     // Profile
@@ -329,6 +332,9 @@ const STRINGS = {
     unblock: 'ブロックを解除',
     shareDraftReady: '共有メッセージを用意しました。相手の鍵を確認してから送信してください。',
     language: '言語',
+    translatePage: 'ページを翻訳（Google翻訳）',
+    translateOriginal: '翻訳…',
+    translateFailed: 'Google翻訳を読み込めませんでした。接続を確認して、もう一度お試しください。',
     lightMode: 'ライトモードに切り替える',
     darkMode: 'ダークモードに切り替える',
     navProfile: 'プロフィール',
