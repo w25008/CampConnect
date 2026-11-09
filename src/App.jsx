@@ -149,7 +149,7 @@ function TranslatePicker({ t }) {
 }
 
 function AuthTop({ t, lang, onChangeLang, theme, onToggleTheme }) {
-  return <div className="auth-top"><div className="auth-logos"><img className="auth-side-logo" src={gaigoLogo} alt="Gaigo"/><img className="auth-logo" src={loginLogo} alt="CampConnect"/><img className="auth-side-logo" src={itcollegeLogo} alt="IT College"/></div><div className="prefs"><LangToggle t={t} lang={lang} onChange={onChangeLang}/><TranslatePicker t={t}/><ThemeToggle t={t} theme={theme} onToggle={onToggleTheme}/></div></div>;
+  return <div className="auth-top"><div className="auth-logos"><img className="auth-side-logo" src={gaigoLogo} alt="Gaigo"/><img className="auth-logo" src={loginLogo} alt="CampConnect"/><img className="auth-side-logo" src={itcollegeLogo} alt="IT College"/></div><div className="prefs"><LangToggle t={t} lang={lang} onChange={onChangeLang}/><ThemeToggle t={t} theme={theme} onToggle={onToggleTheme}/></div></div>;
 }
 function Auth({ notify, t, lang, onChangeLang, theme, onToggleTheme }) {
   const [signup, setSignup] = useState(false);
@@ -357,7 +357,8 @@ export default function App() {
   const langRef = useRef(lang);
   langRef.current = lang;
   // Google Translate cannot follow React swapping the English/Japanese text, so start over with the new language.
-  const changeLang = next => { saveLang(next); if (currentTranslateLanguage()) window.location.reload(); else setLang(next); };
+  // Choosing EN/日本語 turns Google Translate off, so the two never fight over the same text.
+  const changeLang = next => { saveLang(next); if (currentTranslateLanguage()) setTranslateLanguage(''); else setLang(next); };
   useEffect(() => { document.documentElement.lang = lang; }, [lang]);
   const [theme, setTheme] = useState(initialTheme);
   const toggleTheme = () => setTheme(prev => { const next = prev === 'dark' ? 'light' : 'dark'; saveTheme(next); return next; });
@@ -1743,7 +1744,7 @@ export default function App() {
         const current = id === 'profile' ? tab === 'profile' && viewProfileId === userId : tab === id;
         return <button key={id} className={`nav-link ${current ? 'selected' : ''}`} aria-current={current ? 'page' : undefined} onClick={() => (id === 'profile' ? openProfile(userId) : setTab(id))}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>;
       })}</nav>
-      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><TranslatePicker t={t}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
+      <div className="sidebar-bottom"><div className="prefs"><TranslatePicker t={t}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong>{display(mine)}</strong><small>@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? display(profileMap.get(viewProfileId) || profileView.data) : navTitles[tab]}</h1></div>{tab === 'feed' && !viewingOther && <div className="home-magic" role="img" aria-label="A wizard sends sparkling magic to the Gaigo and IT College logos">
