@@ -11,6 +11,7 @@ import itcollegeLogo from './itcollege-logo.png';
 import wizardArtwork from './wizard-opening.png';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang, LANGUAGES, localeFor } from './i18n.js';
+import { translateText } from './lib/translate.js';
 import { initialTheme, saveTheme } from './theme.js';
 import { handleFromEmail } from './username.js';
 import { unlockAudio, playSound } from './sounds.js';
@@ -92,6 +93,33 @@ function ConfirmDialog({ message, confirmLabel, cancelLabel, onConfirm, onCancel
       <div className="form-actions-inline"><button className="secondary" autoFocus onClick={onCancel}>{cancelLabel}</button><button className="danger-button" onClick={onConfirm}>{confirmLabel}</button></div>
     </div>
   </div>;
+}
+// User-written text (a post caption or a comment) with a tap-to-translate
+// toggle into the current UI language. The original text is the default;
+// the translation is fetched on demand and results are cached by the
+// translate module, so switching back and forth does not re-fetch.
+function TranslatableText({ text, t, lang, className }) {
+  const [state, setState] = useState({ mode: 'original', translated: '' });
+  // A different UI language (or edited text) invalidates what is shown.
+  useEffect(() => { setState({ mode: 'original', translated: '' }); }, [lang, text]);
+  async function showTranslation() {
+    if (state.translated) { setState(s => ({ ...s, mode: 'translated' })); return; }
+    setState(s => ({ ...s, mode: 'loading' }));
+    const result = await translateText(text, lang);
+    if (result) setState({ mode: 'translated', translated: result });
+    else setState(s => ({ ...s, mode: 'failed' }));
+  }
+  const showing = state.mode === 'translated';
+  return <>
+    <p className={className}>{showing ? state.translated : text}</p>
+    <div className="translate-row">
+      {showing
+        ? <button type="button" className="translate-toggle" onClick={() => setState(s => ({ ...s, mode: 'original' }))}>{t('seeOriginal')}</button>
+        : <button type="button" className="translate-toggle" disabled={state.mode === 'loading'} onClick={showTranslation}>{state.mode === 'loading' ? t('translating') : t('seeTranslation')}</button>}
+      {showing && <span className="translate-note">{t('machineTranslation')}</span>}
+      {state.mode === 'failed' && <span className="translate-note">{t('translationFailed')}</span>}
+    </div>
+  </>;
 }
 function Lightbox({ t, urls, index, onIndex, onClose, post, canReport, likeCount, commentCount, liked, saved, busy, onLike, onComment, onSave, onShare, onCopyLink, onReport }) {
   const many = urls.length > 1;
@@ -1518,7 +1546,7 @@ export default function App() {
           <small>{editingPost.body.length}/{MAX_POST}</small>
         </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy !== ''} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
       </form> : <>
-        {post.body && <p className="post-body">{post.body}</p>}
+        {post.body && <TranslatableText text={post.body} t={t} lang={lang} className="post-body"/>}
         {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i, post })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
       </>}
       <div className="post-actions"><button className={liked ? 'active' : ''} disabled={busy !== ''} aria-label={liked ? t('unlikePost') : t('likePost')} onClick={() => mutate('like', () => liked ? supabase.from('likes').delete().eq('post_id', post.id).eq('user_id', userId) : supabase.from('likes').insert({ post_id: post.id, user_id: userId }))}><Heart size={18} fill={liked ? 'currentColor' : 'none'}/>{count?.like_count ?? 0}</button><button aria-expanded={!!openComments[post.id]} onClick={() => { if (!openComments[post.id]) loadComments(post.id); setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] })); }}><MessageCircle size={18}/>{count?.comment_count ?? 0}</button><button className={saved ? 'active' : ''} disabled={busy !== ''} aria-label={saved ? t('unsavePost') : t('savePost')} title={saved ? t('unsavePost') : t('savePost')} onClick={() => toggleSavedPost(post)}><Bookmark size={18} fill={saved ? 'currentColor' : 'none'}/></button>
@@ -1562,7 +1590,7 @@ export default function App() {
                 </div>
                 {stickerPickerPost === pickerKey && <div className="comment-sticker-picker" role="group" aria-label={t('addSticker')}>{COMMENT_STICKERS.map(sticker => <button key={sticker.id} type="button" className={selectedSticker === sticker.id ? 'selected' : ''} disabled={busy !== ''} aria-label={`${t('addSticker')} ${sticker.emoji}`} title={sticker.emoji} onClick={() => chooseCommentSticker(post.id, sticker.id)}>{sticker.emoji}</button>)}</div>}
               </form> : <>
-                {c.body && <p>{c.body}</p>}
+                {c.body && <TranslatableText text={c.body} t={t} lang={lang}/>}
                 {c.image_path && <img className="comment-image" src={publicUrl(POST_IMAGE_BUCKET, c.image_path)} alt={t('commentImageAlt')} loading="lazy"/>}
                 {c.sticker_id && <div className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === c.sticker_id)?.emoji}</div>}
               </>}

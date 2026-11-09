@@ -297,6 +297,12 @@ const STRINGS = {
     errLoadCommunity: 'Could not load the community.',
     errAction: 'Action failed. Please try again.',
     errMessage: 'Message could not be sent.',
+    // Content translation (posts & comments)
+    seeTranslation: 'See translation',
+    seeOriginal: 'See original',
+    translating: 'Translating...',
+    translationFailed: 'Translation failed. Try again.',
+    machineTranslation: 'Machine translation',
   },
   ja: {
     loadingPrivateChat: 'プライベートチャットを読み込み中...',
@@ -584,6 +590,12 @@ const STRINGS = {
     errLoadCommunity: 'コミュニティを読み込めませんでした。',
     errAction: '操作に失敗しました。もう一度お試しください。',
     errMessage: 'メッセージを送信できませんでした。',
+    // Content translation (posts & comments)
+    seeTranslation: '翻訳を見る',
+    seeOriginal: '原文を見る',
+    translating: '翻訳中...',
+    translationFailed: '翻訳に失敗しました。もう一度お試しください。',
+    machineTranslation: '機械翻訳',
   },
   my: {
     language: "ဘာသာစကား",
@@ -882,6 +894,12 @@ const STRINGS = {
     errLoadCommunity: "အသိုင်းအဝိုင်းကို ဖွင့်၍မရပါ။",
     errAction: "လုပ်ဆောင်ချက် မအောင်မြင်ပါ။ ကျေးဇူးပြုပြီး ထပ်ကြိုးစားပါ။",
     errMessage: "မက်ဆေ့ချ် ပို့၍မရပါ။",
+    // Content translation (posts & comments)
+    seeTranslation: 'ဘာသာပြန်ချက် ကြည့်ရန်',
+    seeOriginal: 'မူရင်း ကြည့်ရန်',
+    translating: 'ဘာသာပြန်နေသည်...',
+    translationFailed: 'ဘာသာပြန် မအောင်မြင်ပါ။ ထပ်ကြိုးစားပါ။',
+    machineTranslation: 'စက်ဖြင့် ဘာသာပြန်ထားသည်',
   },
   vi: {
     language: "Ngôn ngữ",
@@ -1180,6 +1198,12 @@ const STRINGS = {
     errLoadCommunity: "Không thể tải cộng đồng.",
     errAction: "Hành động thất bại. Vui lòng thử lại.",
     errMessage: "Không thể gửi tin nhắn.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Xem bản dịch',
+    seeOriginal: 'Xem bản gốc',
+    translating: 'Đang dịch...',
+    translationFailed: 'Dịch thất bại. Hãy thử lại.',
+    machineTranslation: 'Bản dịch máy',
   },
   th: {
     language: "ภาษา",
@@ -1478,6 +1502,12 @@ const STRINGS = {
     errLoadCommunity: "ไม่สามารถโหลดชุมชนได้",
     errAction: "การดำเนินการล้มเหลว โปรดลองอีกครั้ง",
     errMessage: "ไม่สามารถส่งข้อความได้",
+    // Content translation (posts & comments)
+    seeTranslation: 'ดูคำแปล',
+    seeOriginal: 'ดูต้นฉบับ',
+    translating: 'กำลังแปล...',
+    translationFailed: 'แปลไม่สำเร็จ โปรดลองอีกครั้ง',
+    machineTranslation: 'คำแปลโดยเครื่อง',
   },
   id: {
     language: "Bahasa",
@@ -1776,6 +1806,12 @@ const STRINGS = {
     errLoadCommunity: "Tidak dapat memuat komunitas.",
     errAction: "Tindakan gagal. Silakan coba lagi.",
     errMessage: "Pesan tidak dapat dikirim.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Lihat terjemahan',
+    seeOriginal: 'Lihat aslinya',
+    translating: 'Menerjemahkan...',
+    translationFailed: 'Terjemahan gagal. Coba lagi.',
+    machineTranslation: 'Terjemahan mesin',
   },
   tl: {
     language: "Wika",
@@ -2074,6 +2110,12 @@ const STRINGS = {
     errLoadCommunity: "Hindi ma-load ang komunidad.",
     errAction: "Nabigo ang aksyon. Subukan ulit.",
     errMessage: "Hindi maipadala ang mensahe.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Tingnan ang salin',
+    seeOriginal: 'Tingnan ang orihinal',
+    translating: 'Nagsasalin...',
+    translationFailed: 'Nabigo ang pagsasalin. Subukan ulit.',
+    machineTranslation: 'Salin ng makina',
   },
   km: {
     language: "ភាសា",
@@ -2372,6 +2414,12 @@ const STRINGS = {
     errLoadCommunity: "មិនអាចផ្ទុកសហគមន៍បានទេ។",
     errAction: "សកម្មភាពបានបរាជ័យ។ សូមព្យាយាមម្តងទៀត។",
     errMessage: "មិនអាចផ្ញើសារបានទេ។",
+    // Content translation (posts & comments)
+    seeTranslation: 'មើលការបកប្រែ',
+    seeOriginal: 'មើលអត្ថបទដើម',
+    translating: 'កំពុងបកប្រែ...',
+    translationFailed: 'ការបកប្រែបានបរាជ័យ។ សូមព្យាយាមម្តងទៀត។',
+    machineTranslation: 'ការបកប្រែដោយម៉ាស៊ីន',
   },
   lo: {
     language: "ພາສາ",
@@ -2670,6 +2718,12 @@ const STRINGS = {
     errLoadCommunity: "ບໍ່ສາມາດໂຫຼດຊຸມຊົນໄດ້.",
     errAction: "ການກະທຳລົ້ມເຫລວ. ກະລຸນາລອງໃໝ່.",
     errMessage: "ບໍ່ສາມາດສົ່ງຂໍ້ຄວາມໄດ້.",
+    // Content translation (posts & comments)
+    seeTranslation: 'ເບິ່ງຄຳແປ',
+    seeOriginal: 'ເບິ່ງຕົ້ນສະບັບ',
+    translating: 'ກຳລັງແປ...',
+    translationFailed: 'ການແປບໍ່ສຳເລັດ. ລອງອີກຄັ້ງ.',
+    machineTranslation: 'ການແປໂດຍເຄື່ອງ',
   },
   "zh-CN": {
     language: "语言",
@@ -2968,6 +3022,12 @@ const STRINGS = {
     errLoadCommunity: "无法加载社区。",
     errAction: "操作失败。请重试。",
     errMessage: "消息发送失败。",
+    // Content translation (posts & comments)
+    seeTranslation: '查看翻译',
+    seeOriginal: '查看原文',
+    translating: '正在翻译...',
+    translationFailed: '翻译失败，请重试。',
+    machineTranslation: '机器翻译',
   },
   "zh-TW": {
     language: "語言",
@@ -3266,6 +3326,12 @@ const STRINGS = {
     errLoadCommunity: "無法載入社群。",
     errAction: "操作失敗。請再試一次。",
     errMessage: "訊息無法傳送。",
+    // Content translation (posts & comments)
+    seeTranslation: '查看翻譯',
+    seeOriginal: '查看原文',
+    translating: '正在翻譯...',
+    translationFailed: '翻譯失敗，請重試。',
+    machineTranslation: '機器翻譯',
   },
   ko: {
     language: "언어",
@@ -3564,6 +3630,12 @@ const STRINGS = {
     errLoadCommunity: "커뮤니티를 불러올 수 없었습니다.",
     errAction: "작업에 실패했습니다. 다시 시도해 주세요.",
     errMessage: "메시지를 보낼 수 없었습니다.",
+    // Content translation (posts & comments)
+    seeTranslation: '번역 보기',
+    seeOriginal: '원문 보기',
+    translating: '번역 중...',
+    translationFailed: '번역에 실패했습니다. 다시 시도해 주세요.',
+    machineTranslation: '기계 번역',
   },
   mn: {
     language: "Хэл",
@@ -3862,6 +3934,12 @@ const STRINGS = {
     errLoadCommunity: "Нийгэмлэгийг ачаалж чадсангүй.",
     errAction: "Үйлдэл амжилтгүй боллоо. Дахин оролдоно уу.",
     errMessage: "Мессеж илгээж чадсангүй.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Орчуулгыг харах',
+    seeOriginal: 'Эх бичвэрийг харах',
+    translating: 'Орчуулж байна...',
+    translationFailed: 'Орчуулга амжилтгүй боллоо. Дахин оролдоно уу.',
+    machineTranslation: 'Машин орчуулга',
   },
   ne: {
     language: "भाषा",
@@ -4160,6 +4238,12 @@ const STRINGS = {
     errLoadCommunity: "समुदाय लोड गर्न सकिएन।",
     errAction: "कार्य असफल भयो। कृपया फेरि प्रयास गर्नुहोस्।",
     errMessage: "सन्देश पठाउन सकिएन।",
+    // Content translation (posts & comments)
+    seeTranslation: 'अनुवाद हेर्नुहोस्',
+    seeOriginal: 'मूल हेर्नुहोस्',
+    translating: 'अनुवाद गर्दै...',
+    translationFailed: 'अनुवाद असफल भयो। फेरि प्रयास गर्नुहोस्।',
+    machineTranslation: 'मेसिन अनुवाद',
   },
   hi: {
     language: "भाषा",
@@ -4458,6 +4542,12 @@ const STRINGS = {
     errLoadCommunity: "समुदाय लोड नहीं हो सका।",
     errAction: "क्रिया विफल रही। कृपया फिर से प्रयास करें।",
     errMessage: "संदेश भेजा नहीं जा सका।",
+    // Content translation (posts & comments)
+    seeTranslation: 'अनुवाद देखें',
+    seeOriginal: 'मूल देखें',
+    translating: 'अनुवाद हो रहा है...',
+    translationFailed: 'अनुवाद विफल रहा। फिर से प्रयास करें।',
+    machineTranslation: 'मशीनी अनुवाद',
   },
   bn: {
     language: "ভাষা",
@@ -4756,6 +4846,12 @@ const STRINGS = {
     errLoadCommunity: "সম্প্রদায় লোড করা যায়নি।",
     errAction: "ক্রিয়া ব্যর্থ হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।",
     errMessage: "বার্তা পাঠানো যায়নি।",
+    // Content translation (posts & comments)
+    seeTranslation: 'অনুবাদ দেখুন',
+    seeOriginal: 'মূল লেখা দেখুন',
+    translating: 'অনুবাদ হচ্ছে...',
+    translationFailed: 'অনুবাদ ব্যর্থ হয়েছে। আবার চেষ্টা করুন।',
+    machineTranslation: 'মেশিন অনুবাদ',
   },
   si: {
     language: "භාෂාව",
@@ -5054,6 +5150,12 @@ const STRINGS = {
     errLoadCommunity: "ප්‍රජාව පූරණය කළ නොහැකි විය.",
     errAction: "ක්‍රියාව අසාර්ථක විය. කරුණාකර නැවත උත්සාහ කරන්න.",
     errMessage: "පණිවිඩය යැවිය නොහැකි විය.",
+    // Content translation (posts & comments)
+    seeTranslation: 'පරිවර්තනය බලන්න',
+    seeOriginal: 'මුල් පිටපත බලන්න',
+    translating: 'පරිවර්තනය කරමින්...',
+    translationFailed: 'පරිවර්තනය අසාර්ථක විය. නැවත උත්සාහ කරන්න.',
+    machineTranslation: 'යන්ත්‍ර පරිවර්තනය',
   },
   ur: {
     language: "زبان",
@@ -5352,6 +5454,12 @@ const STRINGS = {
     errLoadCommunity: "کمیونٹی لوڈ نہیں ہو سکی۔",
     errAction: "عمل ناکام ہو گیا۔ براہ کرم دوبارہ کوشش کریں۔",
     errMessage: "پیغام نہیں بھیجا جا سکا۔",
+    // Content translation (posts & comments)
+    seeTranslation: 'ترجمہ دیکھیں',
+    seeOriginal: 'اصل دیکھیں',
+    translating: 'ترجمہ ہو رہا ہے...',
+    translationFailed: 'ترجمہ ناکام ہو گیا۔ دوبارہ کوشش کریں۔',
+    machineTranslation: 'مشینی ترجمہ',
   },
   es: {
     language: "Idioma",
@@ -5650,6 +5758,12 @@ const STRINGS = {
     errLoadCommunity: "No se pudo cargar la comunidad.",
     errAction: "La acción falló. Inténtalo de nuevo.",
     errMessage: "No se pudo enviar el mensaje.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Ver traducción',
+    seeOriginal: 'Ver original',
+    translating: 'Traduciendo...',
+    translationFailed: 'La traducción falló. Inténtalo de nuevo.',
+    machineTranslation: 'Traducción automática',
   },
   pt: {
     language: "Idioma",
@@ -5948,6 +6062,12 @@ const STRINGS = {
     errLoadCommunity: "Não foi possível carregar a comunidade.",
     errAction: "A ação falhou. Tente novamente.",
     errMessage: "A mensagem não pôde ser enviada.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Ver tradução',
+    seeOriginal: 'Ver original',
+    translating: 'Traduzindo...',
+    translationFailed: 'A tradução falhou. Tente novamente.',
+    machineTranslation: 'Tradução automática',
   },
   fr: {
     language: "Langue",
@@ -6246,6 +6366,12 @@ const STRINGS = {
     errLoadCommunity: "Impossible de charger la communauté.",
     errAction: "L'action a échoué. Veuillez réessayer.",
     errMessage: "Le message n'a pas pu être envoyé.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Voir la traduction',
+    seeOriginal: 'Voir l\'original',
+    translating: 'Traduction en cours...',
+    translationFailed: 'Échec de la traduction. Réessayez.',
+    machineTranslation: 'Traduction automatique',
   },
   ru: {
     language: "Язык",
@@ -6544,6 +6670,12 @@ const STRINGS = {
     errLoadCommunity: "Не удалось загрузить сообщество.",
     errAction: "Действие не удалось. Попробуйте снова.",
     errMessage: "Сообщение не удалось отправить.",
+    // Content translation (posts & comments)
+    seeTranslation: 'Показать перевод',
+    seeOriginal: 'Показать оригинал',
+    translating: 'Перевод...',
+    translationFailed: 'Не удалось перевести. Попробуйте ещё раз.',
+    machineTranslation: 'Машинный перевод',
   },
   ar: {
     language: "اللغة",
@@ -6842,6 +6974,12 @@ const STRINGS = {
     errLoadCommunity: "تعذر تحميل المجتمع.",
     errAction: "فشل الإجراء. حاول مرة أخرى.",
     errMessage: "تعذر إرسال الرسالة.",
+    // Content translation (posts & comments)
+    seeTranslation: 'عرض الترجمة',
+    seeOriginal: 'عرض الأصل',
+    translating: 'جارٍ الترجمة...',
+    translationFailed: 'فشلت الترجمة. حاول مرة أخرى.',
+    machineTranslation: 'ترجمة آلية',
   },
 };
 
