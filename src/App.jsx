@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound, Languages } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound } from 'lucide-react';
 import { supabase, openedFromRecoveryLink } from './lib/supabase.js';
 import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
@@ -12,7 +12,6 @@ import wizardArtwork from './wizard-opening.png';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang } from './i18n.js';
 import { initialTheme, saveTheme } from './theme.js';
-import { TRANSLATE_LANGUAGES, currentTranslateLanguage, setTranslateLanguage } from './translate.js';
 import { handleFromEmail } from './username.js';
 import { unlockAudio, playSound } from './sounds.js';
 
@@ -32,7 +31,7 @@ const isSchoolEmail = value => value.trim().toLowerCase().endsWith(`@${SCHOOL_DO
 const stamp = (value, lang) => new Date(value).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' });
 const snip = (text, max = 70) => (text.length > max ? `${text.slice(0, max).trimEnd()}...` : text);
 const display = profile => profile?.display_name || profile?.handle || 'Member';
-// People's names must never go through Google Translate ("Sai Hlaing Moe" is a name, not words).
+// People's names must never be machine-translated (e.g. by the browser's own translate button).
 const Name = ({ profile }) => <bdi className="notranslate" translate="no">{display(profile)}</bdi>;
 function Avatar({ profile, large }) {
   const [failed, setFailed] = useState('');
@@ -132,22 +131,6 @@ function LangToggle({ t, lang, onChange }) {
   return <div className="lang-switch notranslate" translate="no" role="group" aria-label={t('language')}>
     {[['en', 'EN'], ['ja', '日本語']].map(([code, label]) => <button key={code} type="button" lang={code} className={lang === code ? 'active' : ''} aria-pressed={lang === code} onClick={() => onChange(code)}>{label}</button>)}
   </div>;
-}
-// Translates the whole page into the student's own language with Google Translate.
-function TranslatePicker({ t }) {
-  const [code, setCode] = useState(currentTranslateLanguage);
-  const [failed, setFailed] = useState(false);
-  const choose = async next => {
-    setCode(next); setFailed(false);
-    try { await setTranslateLanguage(next); } catch { setFailed(true); setCode(''); }
-  };
-  return <label className={`translate-picker notranslate ${failed ? 'failed' : ''}`} translate="no" title={failed ? t('translateFailed') : t('translatePage')}>
-    <Languages size={16} aria-hidden="true"/>
-    <select aria-label={t('translatePage')} value={code} onChange={e => choose(e.target.value)}>
-      <option value="">{t('translateOriginal')}</option>
-      {TRANSLATE_LANGUAGES.map(([value, label]) => <option key={value} value={value} lang={value}>{label}</option>)}
-    </select>
-  </label>;
 }
 
 function AuthTop({ t, lang, onChangeLang, theme, onToggleTheme }) {
@@ -358,9 +341,7 @@ export default function App() {
   const when = value => stamp(value, lang);
   const langRef = useRef(lang);
   langRef.current = lang;
-  // Google Translate cannot follow React swapping the English/Japanese text, so start over with the new language.
-  // Choosing EN/日本語 turns Google Translate off, so the two never fight over the same text.
-  const changeLang = next => { saveLang(next); if (currentTranslateLanguage()) setTranslateLanguage(''); else setLang(next); };
+  const changeLang = next => { setLang(next); saveLang(next); };
   useEffect(() => { document.documentElement.lang = lang; }, [lang]);
   const [theme, setTheme] = useState(initialTheme);
   const toggleTheme = () => setTheme(prev => { const next = prev === 'dark' ? 'light' : 'dark'; saveTheme(next); return next; });
@@ -1746,7 +1727,7 @@ export default function App() {
         const current = id === 'profile' ? tab === 'profile' && viewProfileId === userId : tab === id;
         return <button key={id} className={`nav-link ${current ? 'selected' : ''}`} aria-current={current ? 'page' : undefined} onClick={() => (id === 'profile' ? openProfile(userId) : setTab(id))}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>;
       })}</nav>
-      <div className="sidebar-bottom"><div className="prefs"><TranslatePicker t={t}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong><Name profile={mine}/></strong><small translate="no">@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
+      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong><Name profile={mine}/></strong><small translate="no">@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else await clearLocalChatIdentity(userId).catch(() => {}); }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? <Name profile={profileMap.get(viewProfileId) || profileView.data}/> : navTitles[tab]}</h1></div>{tab === 'feed' && !viewingOther && <div className="home-magic" role="img" aria-label="A wizard sends sparkling magic to the Gaigo and IT College logos">
