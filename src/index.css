@@ -66,6 +66,10 @@ body{background:var(--bg);color:var(--text)}
 @media(max-width:560px){.notif{width:calc(100% - 24px);margin:8px 12px}}
 .auth-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:35px}.auth-card .auth-top .brand{margin-bottom:0}
 .sidebar-bottom{flex-direction:column;align-items:stretch;gap:14px}.account-row{display:flex;align-items:center;gap:6px;min-width:0}.lang-switch{display:flex;flex:none;padding:3px;background:var(--input);border:1px solid var(--border);border-radius:999px}.lang-switch button{flex:1;border:0;background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:.75rem;font-weight:700;white-space:nowrap;transition:background .15s,color .15s}.lang-switch button:hover:not(.active){color:var(--text)}.lang-switch button.active{background:var(--coral);color:#fff;}
+.lang-switch select{border:0;background:transparent;color:inherit;border-radius:999px;padding:6px 8px;font:inherit;font-size:.75rem;font-weight:700;white-space:nowrap;cursor:pointer;max-width:100%}
+.lang-switch select:focus-visible{outline:2px solid var(--coral);outline-offset:1px}
+.lang-switch select option{color:#111;background:#fff}
+.sidebar .lang-switch select{color:var(--nav-text)}
 @media(max-width:800px){.sidebar-bottom{flex-direction:row;align-items:center;gap:8px}.lang-switch button{flex:none;padding:5px 10px}}
 .nav-link{white-space:nowrap;flex:none}
 .person-link{border:0;background:none;padding:0;margin:0;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:10px}.person-link:hover strong{text-decoration:underline}.post-person,.member-person{display:flex;align-items:center;gap:11px;flex:1;min-width:0}.member-person{gap:12px}.post-person .post-author{display:block}.account{border:0;background:none;color:inherit;font:inherit;text-align:left;padding:5px;margin:-5px;border-radius:12px;cursor:pointer}.account:hover{background:var(--hover)}.account>div{min-width:0}.prefs{display:flex;align-items:center;gap:8px}.sidebar .prefs .lang-switch{flex:1}.theme-toggle{flex:none;border:1px solid var(--border);border-radius:999px}
