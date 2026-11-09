@@ -18,13 +18,13 @@ function randomBytes(length) {
   return webCrypto().getRandomValues(new Uint8Array(length));
 }
 
-function toBase64Url(bytes) {
+export function toBase64Url(bytes) {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function fromBase64Url(value) {
+export function fromBase64Url(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) {
     throw new Error('Invalid encrypted data encoding.');
   }
@@ -136,10 +136,17 @@ export async function createChatIdentity(userId) {
     },
     recoveryCode: toBase64Url(recoveryCodeBytes),
     privateKey,
+    // Internal only: keyBackup.js wraps this JWK with the account password at
+    // creation/reset time. Callers must never store it, log it, or pass it to
+    // the UI; chatApi strips it from the identity it returns.
+    privateJwk,
   };
 }
 
-export async function restoreChatIdentity(userId, encryptedPrivateKey, recoveryCode, publicKey) {
+// Decrypt the recovery-code backup back to the raw private JWK. Shared by
+// restoreChatIdentity and by the password-backup setup in keyBackup.js, which
+// re-wraps this same JWK under a password-derived key.
+export async function decryptBackupPrivateJwk(userId, encryptedPrivateKey, recoveryCode, publicKey) {
   const fingerprint = await fingerprintPublicKey(publicKey);
   if (encryptedPrivateKey?.version !== VERSION ||
       encryptedPrivateKey.public_key_fingerprint !== fingerprint) {
@@ -166,6 +173,11 @@ export async function restoreChatIdentity(userId, encryptedPrivateKey, recoveryC
   if (actual.x !== expected.x || actual.y !== expected.y || typeof privateJwk.d !== 'string') {
     throw new Error('Chat key backup does not match the public key.');
   }
+  return privateJwk;
+}
+
+export async function restoreChatIdentity(userId, encryptedPrivateKey, recoveryCode, publicKey) {
+  const privateJwk = await decryptBackupPrivateJwk(userId, encryptedPrivateKey, recoveryCode, publicKey);
   return webCrypto().subtle.importKey('jwk', privateJwk,
     { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
 }

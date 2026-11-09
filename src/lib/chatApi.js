@@ -1,9 +1,124 @@
 import {
-  createChatIdentity, restoreChatIdentity, encryptDirectMessage,
+  createChatIdentity, restoreChatIdentity, decryptBackupPrivateJwk, encryptDirectMessage,
   decryptDirectMessage, fingerprintPublicKey, messageKeyReferences, saveLocalChatIdentity,
   loadLocalChatIdentity, clearLocalChatIdentity,
   savePendingRecoveryCode, loadPendingRecoveryCode, clearPendingRecoveryCode,
 } from './e2ee.js';
+import { wrapPrivateKey, unwrapPrivateKey, PasswordBackupError } from './keyBackup.js';
+
+export { PasswordBackupError };
+
+// The password-backup table arrives with migration 0020, which the team runs
+// manually in Supabase. Until then every query against it fails; treat that
+// as "feature not available yet" and fall back to the recovery-code flow
+// instead of surfacing an error.
+function isMissingPasswordBackupTable(error) {
+  if (!error) return false;
+  if (error.code === 'PGRST205' || error.code === '42P01') return true;
+  return /chat_password_backups/.test(error.message || '') &&
+    /does not exist|Could not find/i.test(error.message || '');
+}
+
+async function passwordBackupRow(supabase, userId) {
+  const { data, error } = await supabase.from('chat_password_backups')
+    .select('salt,iv,ciphertext,version,public_key_fingerprint')
+    .eq('user_id', userId).maybeSingle();
+  if (error) {
+    if (isMissingPasswordBackupTable(error)) return { available: false, row: null };
+    throw error;
+  }
+  return { available: true, row: data || null };
+}
+
+// 'current' = backup exists for the account's present chat key; 'stale' =
+// backup exists but for a previous key (e.g. after a reset); 'none' = no
+// backup yet; 'unavailable' = migration 0020 has not been applied.
+export async function passwordBackupStatus(supabase, userId, fingerprint) {
+  const { available, row } = await passwordBackupRow(supabase, userId);
+  if (!available) return 'unavailable';
+  if (!row) return 'none';
+  return row.public_key_fingerprint === fingerprint ? 'current' : 'stale';
+}
+
+async function savePasswordBackup(supabase, userId, publicKey, privateJwk, password) {
+  if (!password) return false;
+  try {
+    const blob = await wrapPrivateKey(privateJwk, userId, publicKey, password);
+    const { error } = await supabase.rpc('save_chat_password_backup', {
+      p_salt: blob.salt, p_iv: blob.iv, p_ciphertext: blob.ciphertext,
+      p_version: blob.version, p_fingerprint: blob.public_key_fingerprint,
+    });
+    if (error) {
+      if (isMissingPasswordBackupTable(error)) return false;
+      throw error;
+    }
+    return true;
+  } catch (error) {
+    if (isMissingPasswordBackupTable(error)) return false;
+    throw error;
+  }
+}
+
+// Create or refresh the password backup from a just-recovered private JWK.
+// Used after a recovery-code restore performed while the account password is
+// known (fresh sign-in), which is also how a backup stranded by an email
+// password reset becomes usable again under the new password. The code the
+// user just typed is passed explicitly; without it, a still-pending code
+// from identity creation on this device is tried.
+export async function refreshPasswordBackupAfterRestore(supabase, userId, identity, password, recoveryCode = '') {
+  if (!password || !identity?.publicKey || !identity?.encryptedPrivateKey) return false;
+  try {
+    const code = recoveryCode || identity.recoveryCode ||
+      await loadPendingRecoveryCode(userId, identity.publicKey).catch(() => '');
+    if (!code) return false;
+    const privateJwk = await decryptBackupPrivateJwk(
+      userId, identity.encryptedPrivateKey, code, identity.publicKey);
+    return savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password);
+  } catch { return false; }
+}
+
+// Set up (or refresh) the password backup when the user enters their
+// recovery code by hand, e.g. from the "turn on password restore" prompt
+// shown to an already-restored identity whose sign-in password was not
+// captured this session. Verifying the code first means a mistyped code
+// cannot create a backup for the wrong key.
+export async function createPasswordBackupFromCode(supabase, userId, recoveryCode, password) {
+  const identity = await loadChatIdentity(supabase, userId);
+  if (!identity.publicKey || !identity.encryptedPrivateKey) {
+    throw new Error('No chat key backup exists for this account.');
+  }
+  const privateJwk = await decryptBackupPrivateJwk(
+    userId, identity.encryptedPrivateKey, recoveryCode, identity.publicKey);
+  return savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password);
+}
+
+// Restore the chat identity with the account password instead of the
+// recovery code. Returns null when no usable backup exists (none, stale, or
+// table missing) so the caller can fall back to the code; throws
+// PasswordBackupError when a backup exists but the password is wrong.
+export async function recoverChatIdentityWithPassword(supabase, userId, password) {
+  const identity = await loadChatIdentity(supabase, userId);
+  if (identity.status === 'ready') return identity;
+  if (!identity.publicKey) return null;
+  const { available, row } = await passwordBackupRow(supabase, userId);
+  if (!available || !row) return null;
+  if (row.public_key_fingerprint !== identity.fingerprint) return null;
+  const { privateKey } = await unwrapPrivateKey(row, userId, identity.publicKey, password);
+  await saveLocalChatIdentity(userId, privateKey, identity.publicKey);
+  return { ...identity, status: 'ready', privateKey, recoveryCode: '' };
+}
+
+// Re-wrap the existing backup after an in-app password change: unlock with
+// the current password, re-wrap with the new one. Best-effort by design; the
+// recovery code remains the fallback if this cannot run.
+export async function rewrapPasswordBackup(supabase, userId, publicKey, currentPassword, newPassword) {
+  const { available, row } = await passwordBackupRow(supabase, userId);
+  if (!available || !row) return false;
+  const fingerprint = await fingerprintPublicKey(publicKey);
+  if (row.public_key_fingerprint !== fingerprint) return false;
+  const { privateJwk } = await unwrapPrivateKey(row, userId, publicKey, currentPassword);
+  return savePasswordBackup(supabase, userId, publicKey, privateJwk, newPassword);
+}
 
 async function keyRow(supabase, userId) {
   const { data, error } = await supabase.from('chat_public_keys')
@@ -35,7 +150,7 @@ export async function loadChatIdentity(supabase, userId) {
     privateKey, fingerprint, recoveryCode: privateKey ? pendingCode : '' };
 }
 
-export async function registerChatIdentity(supabase, userId) {
+export async function registerChatIdentity(supabase, userId, password = '') {
   const existing = await loadChatIdentity(supabase, userId);
   if (existing.status !== 'new') return existing;
   const identity = await createChatIdentity(userId);
@@ -50,16 +165,24 @@ export async function registerChatIdentity(supabase, userId) {
     p_fingerprint: await fingerprintPublicKey(identity.publicKey),
   });
   if (error) throw new Error(`Could not confirm chat setup: ${error.message}. Refresh before retrying.`);
+  // Best-effort password backup while the private JWK is still in memory; a
+  // failure here (e.g. migration 0020 not applied yet) must not fail setup.
+  let passwordBackupSaved = false;
+  if (password) {
+    passwordBackupSaved = await savePasswordBackup(
+      supabase, userId, identity.publicKey, identity.privateJwk, password).catch(() => false);
+  }
   return {
     status: 'ready', publicKey: identity.publicKey,
     encryptedPrivateKey: identity.encryptedPrivateKey,
     privateKey: identity.privateKey,
     fingerprint: await fingerprintPublicKey(identity.publicKey),
     recoveryCode: identity.recoveryCode,
+    passwordBackupSaved,
   };
 }
 
-export async function resetChatIdentity(supabase, userId) {
+export async function resetChatIdentity(supabase, userId, password = '') {
   const identity = await createChatIdentity(userId);
   await saveLocalChatIdentity(userId, identity.privateKey, identity.publicKey);
   await savePendingRecoveryCode(userId, identity.recoveryCode, identity.publicKey);
@@ -69,12 +192,20 @@ export async function resetChatIdentity(supabase, userId) {
     p_fingerprint: await fingerprintPublicKey(identity.publicKey),
   });
   if (error) throw new Error(`Could not confirm chat reset: ${error.message}. Refresh before retrying.`);
+  // Refresh the password backup for the NEW key so it never points at the
+  // dead one; best-effort for the same reason as in registerChatIdentity.
+  let passwordBackupSaved = false;
+  if (password) {
+    passwordBackupSaved = await savePasswordBackup(
+      supabase, userId, identity.publicKey, identity.privateJwk, password).catch(() => false);
+  }
   return {
     status: 'ready', publicKey: identity.publicKey,
     encryptedPrivateKey: identity.encryptedPrivateKey,
     privateKey: identity.privateKey,
     fingerprint: await fingerprintPublicKey(identity.publicKey),
     recoveryCode: identity.recoveryCode,
+    passwordBackupSaved,
   };
 }
 
