@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound } from 'lucide-react';
 import { supabase, openedFromRecoveryLink } from './lib/supabase.js';
-import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, loadEncryptedConversation, sendEncryptedMessage, recoverChatIdentityWithPassword, passwordBackupStatus, refreshPasswordBackupAfterRestore, createPasswordBackupFromCode, rewrapPasswordBackup, revealRecoveryCode, PasswordBackupError } from './lib/chatApi.js';
+import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, loadEncryptedConversation, sendEncryptedMessage, recoverChatIdentityWithPassword, passwordBackupStatus, refreshPasswordBackupAfterRestore, createPasswordBackupFromCode, rewrapPasswordBackup, revealRecoveryCode, ensureChatIdentity, PasswordBackupError } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { buildAudienceEditPayload } from './lib/postAudience.js';
 import { orderVisibleSavedPosts } from './lib/savedPosts.js';
@@ -632,24 +632,24 @@ export default function App() {
     if (!userId) { setChatIdentity(null); setBlockedIds([]); return undefined; }
     let active = true;
     setChatKeyLoading(true);
+    // Signing in is what enables encrypted chat now: ensureChatIdentity
+    // silently creates and registers a key for accounts that have none —
+    // so classmates can message a student who has never opened Messages —
+    // and unlocks a restorable key with the sign-in password when one is
+    // transiently available (Messenger-style restore). It never creates a
+    // fresh key over a restorable one, so the worst case is the same
+    // recovery-code restore screen as before. If the ensure itself fails,
+    // fall back to a plain load so the Messages panels keep their manual
+    // setup/restore paths; this runs in the background either way and
+    // never blocks the app.
+    const identityPromise = ensureChatIdentity(supabase, userId, signInPasswordRef.current)
+      .catch(() => loadChatIdentity(supabase, userId));
     Promise.all([
-      loadChatIdentity(supabase, userId),
+      identityPromise,
       supabase.from('user_blocks').select('blocked_id').eq('blocker_id', userId),
-    ]).then(async ([identity, blockResult]) => {
+    ]).then(([identity, blockResult]) => {
       if (!active) return;
       if (blockResult.error) throw blockResult.error;
-      // Messenger-style restore: if this session started with a password
-      // sign-in and a password backup exists for this key, unlock the chat
-      // identity with that password instead of asking for the recovery code.
-      // Any failure (no backup yet, backup predates a password reset, table
-      // not migrated) silently keeps the recovery-code restore screen.
-      if (identity.status === 'restore' && signInPasswordRef.current) {
-        try {
-          const restored = await recoverChatIdentityWithPassword(supabase, userId, signInPasswordRef.current);
-          if (restored && active) identity = restored;
-        } catch { /* fall through to the recovery-code screen */ }
-      }
-      if (!active) return;
       setChatIdentity(identity);
       setBlockedIds((blockResult.data || []).map(b => b.blocked_id));
       if (identity.publicKey && identity.fingerprint) {
