@@ -5,6 +5,7 @@ import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatI
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { buildAudienceEditPayload } from './lib/postAudience.js';
 import { orderVisibleSavedPosts } from './lib/savedPosts.js';
+import { checkContactKey, acceptContactKey, verifyContactKey } from './lib/contactKeys.js';
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
@@ -369,6 +370,10 @@ export default function App() {
   const [recipientKey, setRecipientKey] = useState(null);
   const [recipientFingerprint, setRecipientFingerprint] = useState('');
   const [verifiedRecipientFingerprint, setVerifiedRecipientFingerprint] = useState('');
+  const [recipientKeyChanged, setRecipientKeyChanged] = useState(false);
+  // Which contact recipientFingerprint belongs to. While switching chats the old
+  // contact's fingerprint is still in state for a moment and must not be used for the new one.
+  const [fingerprintOwner, setFingerprintOwner] = useState('');
   const [blockedIds, setBlockedIds] = useState([]);
   const [commentText, setCommentText] = useState({});
   const [commentMedia, setCommentMedia] = useState({});
@@ -615,7 +620,7 @@ export default function App() {
       const result = await loadEncryptedConversation(supabase, userId, recipient, chatIdentityRef.current);
       if (requestId !== messageRequest.current || recipient !== recipientRef.current) return;
       setMessages(result.messages); setRecipientKey(result.recipientKey);
-      setRecipientFingerprint(result.recipientFingerprint); setError('');
+      setRecipientFingerprint(result.recipientFingerprint); setFingerprintOwner(recipient); setError('');
       if (document.visibilityState === 'visible' && result.messages.some(m => m.sender_id === recipient && m.read_at === null)) {
         await supabase.rpc('mark_messages_read', { other_user: recipient });
       }
@@ -736,14 +741,17 @@ export default function App() {
     try { localStorage.setItem(`campconnect_seen_${userId}`, JSON.stringify(seen)); } catch { /* storage unavailable */ }
   }, [userId, seen]);
   useEffect(() => { if (seen && followers && seen.followers === null) setSeen(s => ({ ...s, followers })); }, [seen, followers]);
-  useEffect(() => { recipientRef.current = recipient; messageRequest.current += 1; setMessages([]); setRecipientKey(null); setRecipientFingerprint(''); }, [recipient, userId]);
+  useEffect(() => { recipientRef.current = recipient; messageRequest.current += 1; setMessages([]); setRecipientKey(null); setRecipientFingerprint(''); setFingerprintOwner(''); }, [recipient, userId]);
   useEffect(() => {
-    if (!userId || !recipient || !recipientFingerprint) { setVerifiedRecipientFingerprint(''); return; }
+    if (!userId || !recipient || !recipientFingerprint || fingerprintOwner !== recipient) { setVerifiedRecipientFingerprint(''); setRecipientKeyChanged(false); return; }
+    // Trust on first use (see lib/contactKeys.js): no comparing needed before chatting.
+    // If the contact's key is different next time, a notice is shown (sending still works).
     try {
-      const saved = localStorage.getItem(`campconnect:verified-key:${userId}:${recipient}`);
-      setVerifiedRecipientFingerprint(saved === recipientFingerprint ? saved : '');
-    } catch { setVerifiedRecipientFingerprint(''); }
-  }, [userId, recipient, recipientFingerprint]);
+      const { verified, changed } = checkContactKey(localStorage, userId, recipient, recipientFingerprint);
+      setVerifiedRecipientFingerprint(verified ? recipientFingerprint : '');
+      setRecipientKeyChanged(changed);
+    } catch { setVerifiedRecipientFingerprint(''); setRecipientKeyChanged(false); }
+  }, [userId, recipient, recipientFingerprint, fingerprintOwner]);
   useEffect(() => { if (tab === 'messages' && chatIdentity?.privateKey) loadMessages(); }, [tab, loadMessages, chatIdentity]);
   useEffect(() => {
     if (tab !== 'profile' || !viewProfileId) return;
@@ -1355,9 +1363,7 @@ export default function App() {
   async function sendMessage(e) {
     e.preventDefault(); const body = messageText.trim();
     if (!recipient || !body || body.length > MAX_MESSAGE) return;
-    if (!recipientFingerprint || verifiedRecipientFingerprint !== recipientFingerprint) {
-      setError(t('verifyContactKeyFirst')); return;
-    }
+    if (!recipientFingerprint) { setError(t('contactKeyMissing')); return; }
     setBusy('message'); setError('');
     try {
       await sendEncryptedMessage(supabase, userId, recipient, body, chatIdentity, recipientFingerprint);
@@ -1453,9 +1459,16 @@ export default function App() {
   }
   function verifyRecipientKey() {
     if (!userId || !recipient || !recipientFingerprint) return;
-    try { localStorage.setItem(`campconnect:verified-key:${userId}:${recipient}`, recipientFingerprint); }
+    try { verifyContactKey(localStorage, userId, recipient, recipientFingerprint); }
     catch { setError(t('cannotRememberKey')); }
-    setVerifiedRecipientFingerprint(recipientFingerprint);
+    setVerifiedRecipientFingerprint(recipientFingerprint); setRecipientKeyChanged(false);
+  }
+  // Dismisses the "key changed" notice by remembering the contact's new key.
+  function acceptRecipientKey() {
+    if (!userId || !recipient || !recipientFingerprint) return;
+    try { acceptContactKey(localStorage, userId, recipient, recipientFingerprint); }
+    catch { /* storage unavailable: the notice returns after a reload */ }
+    setRecipientKeyChanged(false);
   }
   async function toggleBlock() {
     if (!recipient) return;
@@ -2049,7 +2062,7 @@ export default function App() {
         {!chatKeyLoading && chatIdentity?.status === 'restore' && <div className="panel chat-setup"><Shield size={28}/><h2>{t('restorePrivateChat')}</h2><p>{t('restorePrivateChatNote')}</p>{pwBackup === 'current' && <><form onSubmit={restoreChatWithPassword} className="stack-form"><label>{t('password')}<input required type="password" autoComplete="current-password" value={restorePassword} onChange={e => setRestorePassword(e.target.value)}/></label>{pwRestoreError && <p className="error-text" role="alert">{pwRestoreError}</p>}<button className="primary" disabled={busy !== ''}>{busy === 'chat-restore-password' ? t('pleaseWait') : t('restoreWithPassword')}</button></form><p className="muted">{t('restorePasswordHint')}</p></>}{(pwBackup === 'none' || pwBackup === 'stale') && <p className="muted">{t('noPasswordBackup')}</p>}<form onSubmit={restoreChat} className="stack-form"><label>{t('recoveryCode')}<input required value={recoveryInput} onChange={e => setRecoveryInput(e.target.value)} autoComplete="off"/></label><button className="primary" disabled={busy !== ''}>{busy === 'chat-restore' ? t('pleaseWait') : t('restoreChat')}</button></form><div className="reset-chat"><p className="muted">{t('lostRecoveryNote')}</p><button className="secondary" disabled={busy !== ''} onClick={resetChat}>{t('resetChatKey')}</button></div></div>}
         {!chatKeyLoading && chatIdentity?.status === 'ready' && <>
           <div className="chat-security-note"><Shield size={17}/><span>{t('chatSecurityNote')}</span></div>
-          <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel notranslate" translate="no" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong><Name profile={profileMap.get(recipient)}/></strong></PersonLink><button className="secondary block-button" disabled={busy !== ''} onClick={toggleBlock}>{blockedIds.includes(recipient) ? t('unblock') : t('block')}</button><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="key-fingerprints"><small>{t('yourChatKey')}: <code>{chatIdentity.fingerprint}</code></small><small>{t('contactChatKey')}: {recipientFingerprint ? <code>{recipientFingerprint}</code> : t('contactKeyMissing')}</small>{recipientFingerprint && verifiedRecipientFingerprint !== recipientFingerprint && <div className="verify-key"><p>{t('compareContactKey')}</p><button className="secondary" onClick={verifyRecipientKey}>{t('verifiedContactKey')}</button></div>}{recipientFingerprint && verifiedRecipientFingerprint === recipientFingerprint && <small className="verified-key">{t('contactKeyVerified')}</small>}</div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''} ${m.failed ? 'message-failed' : ''}`}><p>{m.failed ? m.text : renderMessageBody(m.text)}</p>{m.legacy && <small>{t('legacyMessage')}</small>}<small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(localeFor(lang), { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={!recipientKey ? t('contactKeyMissing') : verifiedRecipientFingerprint !== recipientFingerprint ? t('verifyContactKeyFirst') : t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)} disabled={!recipientKey || verifiedRecipientFingerprint !== recipientFingerprint || blockedIds.includes(recipient)}/><button className="primary" disabled={busy !== '' || !messageText.trim() || !recipientKey || verifiedRecipientFingerprint !== recipientFingerprint || blockedIds.includes(recipient)} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>
+          <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel notranslate" translate="no" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong><Name profile={profileMap.get(recipient)}/></strong></PersonLink><button className="secondary block-button" disabled={busy !== ''} onClick={toggleBlock}>{blockedIds.includes(recipient) ? t('unblock') : t('block')}</button><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="key-fingerprints"><small>{t('yourChatKey')}: <code>{chatIdentity.fingerprint}</code></small><small>{t('contactChatKey')}: {recipientFingerprint ? <code>{recipientFingerprint}</code> : t('contactKeyMissing')}</small>{recipientFingerprint && recipientKeyChanged && <div className="verify-key key-changed" role="status"><p>{t('contactKeyChanged')}</p><button className="secondary" onClick={acceptRecipientKey}>{t('dismissKeyChange')}</button></div>}{recipientFingerprint && verifiedRecipientFingerprint !== recipientFingerprint && <details className="verify-key"><summary>{t('optionalVerify')}</summary><p>{t('compareContactKey')}</p><button className="secondary" onClick={verifyRecipientKey}>{t('verifiedContactKey')}</button></details>}{recipientFingerprint && verifiedRecipientFingerprint === recipientFingerprint && <small className="verified-key">{t('contactKeyVerified')}</small>}</div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''} ${m.failed ? 'message-failed' : ''}`}><p>{m.failed ? m.text : renderMessageBody(m.text)}</p>{m.legacy && <small>{t('legacyMessage')}</small>}<small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(localeFor(lang), { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={!recipientKey ? t('contactKeyMissing') : t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)} disabled={!recipientKey || blockedIds.includes(recipient)}/><button className="primary" disabled={busy !== '' || !messageText.trim() || !recipientKey || blockedIds.includes(recipient)} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>
         </>}
       </>}
       {tab === 'profile' && renderProfile()}

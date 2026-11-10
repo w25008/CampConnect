@@ -53,6 +53,8 @@ body{background:var(--bg);color:var(--text)}
 .verify-key p{margin:4px 0 8px;font-size:.75rem;line-height:1.4}
 .verify-key .secondary{padding:6px 9px;font-size:.75rem}
 .verified-key{color:var(--ok)}
+.verify-key summary{cursor:pointer;font-size:.72rem}
+.verify-key.key-changed p{color:var(--text);font-weight:600}
 .conversation-header strong{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-header .block-button{padding:5px 8px;font-size:.72rem}
 .message-failed{border:1px solid #be4868;background:#4b1d31}

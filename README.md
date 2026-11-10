@@ -52,6 +52,9 @@ A migration is a SQL file that changes your database, such as adding a table or 
 - `0016_saved_posts.sql` lets students save posts for later. Apply it once after `0015_image_cleanup.sql`, then deploy the updated frontend. Saved post references are private to each student, and the existing post visibility rules still control which post content can be read.
 - `0017_saved_collections.sql` adds saved-post collections. Apply it once after `0016_saved_posts.sql` and deploy the updated frontend. Collections are private to the student who created them. You can put saved posts into a collection and filter by it on the Saved page.
 - `0019_comment_media_and_editing.sql` adds comment editing, still-photo attachments, and stickers. Apply it after `0018_username_from_email.sql`. Comment photos work only on school-wide posts, because the image bucket has public URLs. Stickers and text comments also work on posts with restricted audiences. GIFs are not available in comments.
+- `0022_security_hardening.sql` tightens security. Apply it after `0021_leave_and_delete_groups.sql`. Posts can only be edited through the app's edit function. A block now also stops follows, likes, comments, selected-audience posts, and group invitations between the two students. It adds size limits on chat data and per-student rate limits (20 posts or comments a minute, 40 messages a minute, 10 reports an hour).
+
+Security headers are set in `vercel.json` (Content-Security-Policy, clickjacking protection, and others). Scripts may only load from the app itself, and the app may only connect to Supabase and the two caption-translation services used by `src/lib/translate.js` (Google Translate and MyMemory). `npm run preview` sends the same headers, so test there after you add any new outside script, image host, or API, and add its address to the policy in `vercel.json`.
 
 After you apply `0015`, test it with two confirmed school accounts:
 
@@ -97,7 +100,7 @@ Open the URL that Vite prints in the terminal. Run `npm run build` before you de
 
 ## Deploy for free
 
-1. Apply the required migrations through `0019` to the database before you deploy the new frontend. The new code depends on the image-storage, saved-post, collection, and comment-media rules.
+1. Apply the required migrations through `0022` to the database before you deploy the new frontend. The new code depends on the image-storage, saved-post, collection, and comment-media rules.
 2. Build with `npm run build`. Vercel deploys automatically when you push to `main`. Check that the deployment finished before you invite students.
 3. Test the live app with at least three confirmed school accounts. An unconfirmed or outside email address must not be able to read community data. People outside an audience or group must not be able to fetch its posts, comments, likes, or counts through direct API calls. New group members must not see old posts, and removed members must lose database access going forward.
 4. Set up chat keys for two accounts and check the following:
@@ -116,6 +119,6 @@ New chat messages are encrypted in the browser with ECDH, HKDF, and AES-GCM. Sup
 
 If a student loses both the browser key and the recovery code, they can reset their key and send new messages, but they cannot read their own old encrypted chats. The other person can still read their copies, because the old public keys are kept.
 
-This is a prototype and falls short of Signal-level security. It has no ratchet or forward secrecy (the extra steps that protect old messages if a key leaks later). The server could also swap in a different public key unless students compare fingerprints through another channel. Whoever controls the website can change its JavaScript, so do not promise that the operator is technically unable to read messages. Existing version-0 messages are plaintext and are labeled that way in the app.
+This is a prototype and falls short of Signal-level security. It has no ratchet or forward secrecy (the extra steps that protect old messages if a key leaks later). Students can message each other without comparing keys: the browser remembers the first key it sees for each contact and shows a notice if that key later changes. Comparing fingerprints through another channel is optional, so the server could swap in a different public key for a first conversation without anyone noticing. Whoever controls the website can change its JavaScript, so do not promise that the operator is technically unable to read messages. Existing version-0 messages are plaintext and are labeled that way in the app.
 
 Official setup references: [Supabase React Auth](https://supabase.com/docs/guides/auth/quickstarts/react), [Supabase RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [Vercel Vite](https://vercel.com/docs/frameworks/frontend/vite).

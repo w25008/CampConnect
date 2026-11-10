@@ -314,7 +314,7 @@ export async function sendEncryptedMessage(supabase, userId, recipientId, plaint
   const recipientKey = await keyRow(supabase, recipientId);
   if (!recipientKey) throw new Error('This student has not enabled encrypted chat yet.');
   const fingerprint = await fingerprintPublicKey(recipientKey);
-  if (fingerprint !== expectedRecipientFingerprint) throw new Error('This student’s chat key changed. Refresh and verify the new key before sending.');
+  if (fingerprint !== expectedRecipientFingerprint) throw new Error('This student’s chat key just changed. Refresh the conversation and send again.');
   const encryptedPayload = await encryptDirectMessage({
     plaintext, senderId: userId, recipientId,
     senderPrivateKey: identity.privateKey,
