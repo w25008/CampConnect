@@ -1172,6 +1172,22 @@ export default function App() {
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
   }
+  // Owner deletes the whole group; anyone else leaves it.
+  async function leaveOrDeleteGroup(group) {
+    const owner = group.owner_id === userId;
+    setBusy('group'); setError('');
+    try {
+      const { data, error: err } = await supabase.rpc(owner ? 'delete_student_group' : 'leave_student_group', { p_group_id: group.id });
+      if (err) throw err;
+      if (owner && data) await cleanupImages(AVATAR_BUCKET, [data]);
+      setShowGroupInfo(false); setGroupEditName(null); setActiveGroup('');
+      await loadCommunity();
+      setFlash(t(owner ? 'groupDeleted' : 'leftGroup'));
+    } catch (err) {
+      const missing = /could not find the function|PGRST202/i.test(err?.message || '') || err?.code === 'PGRST202';
+      setError(missing ? t('errGroupLeaveSetup') : err.message || t('errAction'));
+    } finally { setBusy(''); }
+  }
   const deletePost = post => mutate('delete', async () => {
     const result = await supabase.from('posts').delete().eq('id', post.id);
     if (!result.error) await cleanupImages(POST_IMAGE_BUCKET, postImagePaths(post));
@@ -2020,6 +2036,9 @@ export default function App() {
             <h3>{t('groupMembers')}</h3>
             <div className="group-member-list">{currentGroupMembers.map(member => { const person = profileMap.get(member.user_id); return <div className="group-member" key={member.user_id}><Avatar profile={person}/><span><strong><Name profile={person}/></strong><small translate="no">@{person?.handle || 'member'} · {t('joinedGroup', { date: when(member.joined_at) })}</small></span>{currentGroup.owner_id === userId && member.user_id !== userId && <button type="button" className="secondary" disabled={busy !== ''} onClick={() => askConfirm(t('confirmRemoveGroupMember', { name: display(person) }), t('removeMember'), () => changeGroupMember(currentGroup.id, member.user_id, true))}>{t('removeMember')}</button>}</div>; })}</div>
             {currentGroup.owner_id === userId && <div className="group-invite"><label>{t('addMember')}<input value={memberQuery} onChange={e => setMemberQuery(e.target.value)} placeholder={t('searchPeople')}/></label>{memberQuery.trim() && <div className="audience-results">{memberMatches.filter(person => !currentGroupMembers.some(member => member.user_id === person.id)).map(person => <button type="button" key={person.id} disabled={busy !== ''} onClick={() => changeGroupMember(currentGroup.id, person.id)}><Avatar profile={person}/><span><Name profile={person}/> <small translate="no">@{person.handle}</small></span><UserPlus size={16}/></button>)}</div>}</div>}
+            <div className="group-danger">{currentGroup.owner_id === userId
+              ? <button type="button" className="danger-button" disabled={busy !== ''} onClick={() => askConfirm(t('confirmDeleteGroup', { name: currentGroup.name }), t('deleteGroup'), () => leaveOrDeleteGroup(currentGroup))}><Trash2 size={16}/> {t('deleteGroup')}</button>
+              : <button type="button" className="danger-button" disabled={busy !== ''} onClick={() => askConfirm(t('confirmLeaveGroup', { name: currentGroup.name }), t('leaveGroup'), () => leaveOrDeleteGroup(currentGroup))}><LogOut size={16}/> {t('leaveGroup')}</button>}</div>
           </section>
         </div>}
       </div>}

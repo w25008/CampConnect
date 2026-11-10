@@ -314,3 +314,4 @@ button,input,textarea,select{font:inherit}
 .translate-toggle{border:0;background:none;padding:0;color:var(--muted);font-size:.75rem;font-weight:650;text-decoration:underline;text-underline-offset:2px}
 .translate-toggle:hover:not(:disabled){color:var(--text)}
 .translate-note{color:var(--muted);font-size:.68rem}
+.group-danger{display:flex;justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}.group-danger .danger-button{display:inline-flex;align-items:center;gap:6px}
