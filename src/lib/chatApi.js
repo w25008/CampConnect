@@ -8,6 +8,25 @@ import { wrapPrivateKey, unwrapPrivateKey, PasswordBackupError } from './keyBack
 
 export { PasswordBackupError };
 
+// Chat-identity mutations are serialized per account through a promise
+// chain. The sign-in bootstrap (ensureChatIdentity), the Messages-page
+// setup button (registerChatIdentity) and a key reset can all fire around
+// the same moment — sign-in while effects remount, or a click while the
+// bootstrap is still running — and without this, two flows could both see
+// "no identity yet" and race to register different keys for one account.
+const identityFlights = new Map();
+
+function withIdentityLock(userId, task) {
+  const previous = identityFlights.get(userId) || Promise.resolve();
+  const current = previous.then(task, task);
+  identityFlights.set(userId, current);
+  const cleanup = () => {
+    if (identityFlights.get(userId) === current) identityFlights.delete(userId);
+  };
+  current.then(cleanup, cleanup);
+  return current;
+}
+
 // The password-backup table arrives with migration 0020, which the team runs
 // manually in Supabase. Until then every query against it fails; treat that
 // as "feature not available yet" and fall back to the recovery-code flow
@@ -187,7 +206,7 @@ export async function loadChatIdentity(supabase, userId) {
     privateKey, fingerprint, recoveryCode: privateKey ? pendingCode : '' };
 }
 
-export async function registerChatIdentity(supabase, userId, password = '') {
+async function registerChatIdentityImpl(supabase, userId, password = '') {
   const existing = await loadChatIdentity(supabase, userId);
   if (existing.status !== 'new') return existing;
   const identity = await createChatIdentity(userId);
@@ -220,7 +239,11 @@ export async function registerChatIdentity(supabase, userId, password = '') {
   };
 }
 
-export async function resetChatIdentity(supabase, userId, password = '') {
+export function registerChatIdentity(supabase, userId, password = '') {
+  return withIdentityLock(userId, () => registerChatIdentityImpl(supabase, userId, password));
+}
+
+async function resetChatIdentityImpl(supabase, userId, password = '') {
   const identity = await createChatIdentity(userId);
   await saveLocalChatIdentity(userId, identity.privateKey, identity.publicKey);
   await savePendingRecoveryCode(userId, identity.recoveryCode, identity.publicKey);
@@ -246,6 +269,41 @@ export async function resetChatIdentity(supabase, userId, password = '') {
     recoveryCode: identity.recoveryCode,
     passwordBackupSaved,
   };
+}
+
+export function resetChatIdentity(supabase, userId, password = '') {
+  return withIdentityLock(userId, () => resetChatIdentityImpl(supabase, userId, password));
+}
+
+// Sign-in bootstrap: make sure this account has a usable chat identity
+// without the student ever opening the Messages page, so classmates can
+// message them from their very first sign-in. Runs silently in the
+// background; the caller treats any failure as "leave chat as it was".
+//   ready   — nothing to do.
+//   restore — a key exists but is locked on this device. Only a password
+//             that is transiently available (fresh password sign-in) may
+//             unlock it via the password backup. On any failure the
+//             restorable identity is returned untouched: a fresh key is
+//             NEVER created over one that could still be restored, or old
+//             messages would become unreadable.
+//   new     — no key anywhere: create one silently, register the public
+//             key, and (when a password is available) save the password
+//             backup, exactly like the manual setup did.
+export function ensureChatIdentity(supabase, userId, password = '') {
+  return withIdentityLock(userId, async () => {
+    const identity = await loadChatIdentity(supabase, userId);
+    if (identity.status === 'ready') return identity;
+    if (identity.status === 'restore') {
+      if (password) {
+        try {
+          const restored = await recoverChatIdentityWithPassword(supabase, userId, password);
+          if (restored) return restored;
+        } catch { /* wrong password or unusable backup: keep the restore state */ }
+      }
+      return identity;
+    }
+    return registerChatIdentityImpl(supabase, userId, password);
+  });
 }
 
 export async function recoverChatIdentity(supabase, userId, recoveryCode) {
