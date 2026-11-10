@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound } from 'lucide-react';
 import { supabase, openedFromRecoveryLink } from './lib/supabase.js';
-import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, acknowledgeRecoveryCode, loadEncryptedConversation, sendEncryptedMessage, recoverChatIdentityWithPassword, passwordBackupStatus, refreshPasswordBackupAfterRestore, createPasswordBackupFromCode, rewrapPasswordBackup, PasswordBackupError } from './lib/chatApi.js';
+import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, loadEncryptedConversation, sendEncryptedMessage, recoverChatIdentityWithPassword, passwordBackupStatus, refreshPasswordBackupAfterRestore, createPasswordBackupFromCode, rewrapPasswordBackup, revealRecoveryCode, PasswordBackupError } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { buildAudienceEditPayload } from './lib/postAudience.js';
 import { orderVisibleSavedPosts } from './lib/savedPosts.js';
@@ -346,8 +346,17 @@ export default function App() {
   const [messageText, setMessageText] = useState('');
   const [chatIdentity, setChatIdentity] = useState(null);
   const [chatKeyLoading, setChatKeyLoading] = useState(false);
-  const [recoveryCode, setRecoveryCode] = useState('');
   const [recoveryInput, setRecoveryInput] = useState('');
+  // Profile "show recovery code" flow: the code is never displayed at chat
+  // setup time any more; it lives inside the password backup (v2 payload)
+  // and is revealed here after a password check.
+  const [revealOpen, setRevealOpen] = useState(false);
+  const [revealPassword, setRevealPassword] = useState('');
+  const [revealCodeInput, setRevealCodeInput] = useState('');
+  const [revealedCode, setRevealedCode] = useState('');
+  const [revealNeedsCode, setRevealNeedsCode] = useState(false);
+  const [revealError, setRevealError] = useState('');
+  const [codeCopied, setCodeCopied] = useState(false);
   // Password-restore state: pwBackup mirrors passwordBackupStatus() for the
   // current chat key ('unknown' until checked). The sign-in password itself
   // is kept only in signInPasswordRef (transient memory, never state,
@@ -355,8 +364,7 @@ export default function App() {
   const [pwBackup, setPwBackup] = useState('unknown');
   const [restorePassword, setRestorePassword] = useState('');
   const [pwRestoreError, setPwRestoreError] = useState('');
-  const [setupPassword, setSetupPassword] = useState('');
-  const [setupCode, setSetupCode] = useState('');
+
   const signInPasswordRef = useRef('');
   const [recipientKey, setRecipientKey] = useState(null);
   const [recipientFingerprint, setRecipientFingerprint] = useState('');
@@ -637,7 +645,7 @@ export default function App() {
         } catch { /* fall through to the recovery-code screen */ }
       }
       if (!active) return;
-      setChatIdentity(identity); setRecoveryCode(identity.recoveryCode || '');
+      setChatIdentity(identity);
       setBlockedIds((blockResult.data || []).map(b => b.blocked_id));
       if (identity.publicKey && identity.fingerprint) {
         passwordBackupStatus(supabase, userId, identity.fingerprint)
@@ -1345,7 +1353,7 @@ export default function App() {
     setBusy('chat-key'); setError('');
     try {
       const identity = await registerChatIdentity(supabase, userId, signInPasswordRef.current);
-      setChatIdentity(identity); setRecoveryCode(identity.recoveryCode || '');
+      setChatIdentity(identity);
       if (identity.passwordBackupSaved) setPwBackup('current');
     } catch (err) { setError(err.message || t('errMessage')); }
     finally { setBusy(''); }
@@ -1380,25 +1388,47 @@ export default function App() {
       else setError(err.message || t('errMessage'));
     } finally { setBusy(''); }
   }
-  async function setupPasswordBackup(e) {
-    e.preventDefault(); setBusy('chat-backup-setup'); setError('');
+  async function showRecoveryCode(e) {
+    e.preventDefault(); setBusy('reveal-code'); setRevealError('');
     try {
-      // Prefer the code already in memory for a fresh identity; otherwise
-      // the user types it once into the setup form.
-      const code = (recoveryCode || setupCode).trim();
-      if (!code) { setError(t('errMessage')); return; }
-      const saved = await createPasswordBackupFromCode(supabase, userId, code, setupPassword);
-      if (!saved) { setError(t('noPasswordBackup')); return; }
-      setSetupPassword(''); setSetupCode(''); setPwBackup('current'); setFlash(t('passwordBackupSaved'));
-    } catch (err) { setError(err.message || t('errMessage')); }
+      const result = await revealRecoveryCode(supabase, userId, revealPassword);
+      if (result.status === 'ok') {
+        setRevealedCode(result.recoveryCode); setRevealNeedsCode(false); setPwBackup('current');
+      } else if (result.status === 'needs-code') {
+        // No stored copy of the code yet (older backup, or the password
+        // backup could not be created at setup): ask for the code once so it
+        // can be stored inside a new password backup.
+        setRevealNeedsCode(true); setRevealError(t('recoveryCodeNeedsCode'));
+      } else {
+        setRevealError(t('recoveryCodeUnavailable'));
+      }
+    } catch (err) {
+      if (err instanceof PasswordBackupError) setRevealError(t('wrongPasswordRestore'));
+      else setRevealError(err.message || t('errAction'));
+    } finally { setBusy(''); }
+  }
+  async function saveAndShowRecoveryCode(e) {
+    e.preventDefault(); setBusy('reveal-code-save'); setRevealError('');
+    const code = revealCodeInput.trim();
+    try {
+      const saved = await createPasswordBackupFromCode(supabase, userId, code, revealPassword);
+      if (!saved) { setRevealError(t('recoveryCodeUnavailable')); return; }
+      // The code the user just typed is verified by createPasswordBackupFromCode
+      // (it decrypts the code-wrapped backup first), so it is safe to show.
+      setRevealedCode(code); setRevealCodeInput(''); setRevealNeedsCode(false); setPwBackup('current');
+    } catch (err) { setRevealError(err.message || t('errAction')); }
     finally { setBusy(''); }
+  }
+  async function copyRevealedCode() {
+    try { await navigator.clipboard.writeText(revealedCode); setCodeCopied(true); }
+    catch { setRevealError(t('errAction')); }
   }
   async function resetChat() {
     askConfirm(t('confirmResetChat'), t('resetChatKey'), async () => {
       setBusy('chat-reset'); setError('');
       try {
         const identity = await resetChatIdentity(supabase, userId, signInPasswordRef.current);
-        setChatIdentity(identity); setRecoveryCode(identity.recoveryCode);
+        setChatIdentity(identity); setRevealedCode(''); setRevealOpen(false);
         setMessages([]); setRecipientKey(null); setRecipientFingerprint('');
         setPwBackup(identity.passwordBackupSaved ? 'current' : 'none');
       } catch (err) { setError(err.message || t('errMessage')); }
@@ -1750,6 +1780,25 @@ export default function App() {
         </div>
         <div className="form-actions"><button type="button" className="secondary" onClick={closePasswordForm}>{t('cancel')}</button><button className="primary" disabled={busy !== ''}>{busy === 'password' ? t('saving') : t('savePassword')}</button></div>
       </form>}
+      {isMe && chatIdentity?.status === 'ready' && <section className="profile-form panel">
+        <h2>{t('recoveryCode')}</h2>
+        <p className="muted">{t('recoveryCodeProfileNote')}</p>
+        {!revealOpen && <button type="button" className="secondary" onClick={() => { setRevealOpen(true); setRevealError(''); }}><KeyRound size={16}/> {t('showRecoveryCode')}</button>}
+        {revealOpen && !revealedCode && <form className="stack-form" onSubmit={showRecoveryCode}>
+          <label>{t('password')}<input required type="password" autoComplete="current-password" value={revealPassword} onChange={e => setRevealPassword(e.target.value)}/></label>
+          {revealError && <p className="error-text" role="alert">{revealError}</p>}
+          <div className="form-actions"><button type="button" className="secondary" onClick={() => { setRevealOpen(false); setRevealPassword(''); setRevealError(''); setRevealNeedsCode(false); }}>{t('cancel')}</button><button className="primary" disabled={busy !== ''}>{busy === 'reveal-code' ? t('pleaseWait') : t('showRecoveryCode')}</button></div>
+        </form>}
+        {revealOpen && revealNeedsCode && !revealedCode && <form className="stack-form" onSubmit={saveAndShowRecoveryCode}>
+          <label>{t('recoveryCode')}<input required value={revealCodeInput} onChange={e => setRevealCodeInput(e.target.value)} autoComplete="off"/></label>
+          <div className="form-actions"><button className="primary" disabled={busy !== ''}>{busy === 'reveal-code-save' ? t('pleaseWait') : t('saveAndShowCode')}</button></div>
+        </form>}
+        {revealedCode && <div className="notranslate" translate="no">
+          <p><code>{revealedCode}</code></p>
+          <p className="muted">{t('saveRecoveryNote')}</p>
+          <div className="form-actions"><button type="button" className="secondary" onClick={copyRevealedCode}>{codeCopied ? t('codeCopied') : t('copyCode')}</button><button type="button" className="secondary" onClick={() => { setRevealedCode(''); setRevealOpen(false); setRevealPassword(''); setCodeCopied(false); }}>{t('hideRecoveryCode')}</button></div>
+        </div>}
+      </section>}
       <div className="section-heading"><h2>{t('postsCount')}</h2></div>
       {profileView.posts.length === 0 && <div className="empty panel">{t('noProfilePosts')}</div>}
       {profileView.posts.map(renderPost)}
@@ -1835,7 +1884,7 @@ export default function App() {
         const current = id === 'profile' ? tab === 'profile' && viewProfileId === userId : tab === id;
         return <button key={id} className={`nav-link ${current ? 'selected' : ''}`} aria-current={current ? 'page' : undefined} onClick={() => (id === 'profile' ? openProfile(userId) : setTab(id))}><Icon size={20}/>{navTitles[id]}{badges[id] > 0 && <span className="badge" aria-label={t('newCount', { n: badges[id] })}>{badgeText(badges[id])}</span>}</button>;
       })}</nav>
-      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong><Name profile={mine}/></strong><small translate="no">@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { if (recoveryCode) { setError(t('saveRecoveryBeforeSignout')); setTab('messages'); return; } const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else { signInPasswordRef.current = ''; await clearLocalChatIdentity(userId).catch(() => {}); } }}><LogOut size={18}/></button></div></div>
+      <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong><Name profile={mine}/></strong><small translate="no">@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else { signInPasswordRef.current = ''; await clearLocalChatIdentity(userId).catch(() => {}); } }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
       <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? <Name profile={profileMap.get(viewProfileId) || profileView.data}/> : navTitles[tab]}</h1></div>{tab === 'feed' && !viewingOther && <div className="home-magic" role="img" aria-label="A wizard sends sparkling magic to the Gaigo and IT College logos">
@@ -1980,8 +2029,6 @@ export default function App() {
         {!chatKeyLoading && chatIdentity?.status === 'new' && <div className="panel chat-setup"><Shield size={28}/><h2>{t('enablePrivateChat')}</h2><p>{t('enablePrivateChatNote')}</p><button className="primary" disabled={busy !== ''} onClick={enableChat}>{t('createChatKey')}</button></div>}
         {!chatKeyLoading && chatIdentity?.status === 'restore' && <div className="panel chat-setup"><Shield size={28}/><h2>{t('restorePrivateChat')}</h2><p>{t('restorePrivateChatNote')}</p>{pwBackup === 'current' && <><form onSubmit={restoreChatWithPassword} className="stack-form"><label>{t('password')}<input required type="password" autoComplete="current-password" value={restorePassword} onChange={e => setRestorePassword(e.target.value)}/></label>{pwRestoreError && <p className="error-text" role="alert">{pwRestoreError}</p>}<button className="primary" disabled={busy !== ''}>{busy === 'chat-restore-password' ? t('pleaseWait') : t('restoreWithPassword')}</button></form><p className="muted">{t('restorePasswordHint')}</p></>}{(pwBackup === 'none' || pwBackup === 'stale') && <p className="muted">{t('noPasswordBackup')}</p>}<form onSubmit={restoreChat} className="stack-form"><label>{t('recoveryCode')}<input required value={recoveryInput} onChange={e => setRecoveryInput(e.target.value)} autoComplete="off"/></label><button className="primary" disabled={busy !== ''}>{busy === 'chat-restore' ? t('pleaseWait') : t('restoreChat')}</button></form><div className="reset-chat"><p className="muted">{t('lostRecoveryNote')}</p><button className="secondary" disabled={busy !== ''} onClick={resetChat}>{t('resetChatKey')}</button></div></div>}
         {!chatKeyLoading && chatIdentity?.status === 'ready' && <>
-          {recoveryCode && <div className="panel recovery-notice notranslate" translate="no" role="status"><h2>{t('saveRecoveryCode')}</h2><p>{t('saveRecoveryNote')}</p><code>{recoveryCode}</code><button className="secondary" onClick={async () => { try { await acknowledgeRecoveryCode(userId); setRecoveryCode(''); } catch (err) { setError(err.message || t('errAction')); } }}>{t('savedRecoveryCode')}</button>{pwBackup === 'current' && <p className="muted">{t('passwordBackupSaved')}</p>}{pwBackup !== 'current' && pwBackup !== 'unavailable' && pwBackup !== 'unknown' && <form onSubmit={setupPasswordBackup} className="stack-form"><p className="muted">{t('passwordRestoreSetupNote')}</p><label>{t('password')}<input required type="password" autoComplete="current-password" value={setupPassword} onChange={e => setSetupPassword(e.target.value)}/></label><button className="secondary" disabled={busy !== ''}>{t('enablePasswordRestore')}</button></form>}</div>}
-          {!recoveryCode && chatIdentity?.status === 'ready' && (pwBackup === 'none' || pwBackup === 'stale') && <div className="panel chat-setup"><Shield size={28}/><h2>{t('enablePasswordRestore')}</h2><p className="muted">{t('passwordRestoreSetupNote')}</p><form onSubmit={setupPasswordBackup} className="stack-form"><label>{t('recoveryCode')}<input required value={setupCode} onChange={e => setSetupCode(e.target.value)} autoComplete="off"/></label><label>{t('password')}<input required type="password" autoComplete="current-password" value={setupPassword} onChange={e => setSetupPassword(e.target.value)}/></label><button className="primary" disabled={busy !== ''}>{t('enablePasswordRestore')}</button></form></div>}
           <div className="chat-security-note"><Shield size={17}/><span>{t('chatSecurityNote')}</span></div>
           <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel notranslate" translate="no" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong><Name profile={profileMap.get(recipient)}/></strong></PersonLink><button className="secondary block-button" disabled={busy !== ''} onClick={toggleBlock}>{blockedIds.includes(recipient) ? t('unblock') : t('block')}</button><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="key-fingerprints"><small>{t('yourChatKey')}: <code>{chatIdentity.fingerprint}</code></small><small>{t('contactChatKey')}: {recipientFingerprint ? <code>{recipientFingerprint}</code> : t('contactKeyMissing')}</small>{recipientFingerprint && verifiedRecipientFingerprint !== recipientFingerprint && <div className="verify-key"><p>{t('compareContactKey')}</p><button className="secondary" onClick={verifyRecipientKey}>{t('verifiedContactKey')}</button></div>}{recipientFingerprint && verifiedRecipientFingerprint === recipientFingerprint && <small className="verified-key">{t('contactKeyVerified')}</small>}</div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''} ${m.failed ? 'message-failed' : ''}`}><p>{m.failed ? m.text : renderMessageBody(m.text)}</p>{m.legacy && <small>{t('legacyMessage')}</small>}<small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(localeFor(lang), { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={!recipientKey ? t('contactKeyMissing') : verifiedRecipientFingerprint !== recipientFingerprint ? t('verifyContactKeyFirst') : t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)} disabled={!recipientKey || verifiedRecipientFingerprint !== recipientFingerprint || blockedIds.includes(recipient)}/><button className="primary" disabled={busy !== '' || !messageText.trim() || !recipientKey || verifiedRecipientFingerprint !== recipientFingerprint || blockedIds.includes(recipient)} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>
         </>}
