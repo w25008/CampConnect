@@ -40,10 +40,10 @@ export async function passwordBackupStatus(supabase, userId, fingerprint) {
   return row.public_key_fingerprint === fingerprint ? 'current' : 'stale';
 }
 
-async function savePasswordBackup(supabase, userId, publicKey, privateJwk, password) {
+async function savePasswordBackup(supabase, userId, publicKey, privateJwk, password, recoveryCode = '') {
   if (!password) return false;
   try {
-    const blob = await wrapPrivateKey(privateJwk, userId, publicKey, password);
+    const blob = await wrapPrivateKey(privateJwk, userId, publicKey, password, recoveryCode);
     const { error } = await supabase.rpc('save_chat_password_backup', {
       p_salt: blob.salt, p_iv: blob.iv, p_ciphertext: blob.ciphertext,
       p_version: blob.version, p_fingerprint: blob.public_key_fingerprint,
@@ -73,7 +73,7 @@ export async function refreshPasswordBackupAfterRestore(supabase, userId, identi
     if (!code) return false;
     const privateJwk = await decryptBackupPrivateJwk(
       userId, identity.encryptedPrivateKey, code, identity.publicKey);
-    return savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password);
+    return savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password, code);
   } catch { return false; }
 }
 
@@ -89,7 +89,7 @@ export async function createPasswordBackupFromCode(supabase, userId, recoveryCod
   }
   const privateJwk = await decryptBackupPrivateJwk(
     userId, identity.encryptedPrivateKey, recoveryCode, identity.publicKey);
-  return savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password);
+  return savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password, recoveryCode);
 }
 
 // Restore the chat identity with the account password instead of the
@@ -108,6 +108,43 @@ export async function recoverChatIdentityWithPassword(supabase, userId, password
   return { ...identity, status: 'ready', privateKey, recoveryCode: '' };
 }
 
+// Reveal the recovery code from the Profile page. The creation panel that
+// used to show the code once is gone, so the code must stay retrievable:
+//   1. A v2 password backup stores the code inside its encrypted payload —
+//      unwrap it with the account password and return the code.
+//   2. Older v1 backups never stored the code. If this device still holds
+//      the pending code from creation (IndexedDB), verify it against the
+//      code-wrapped backup, upgrade the password backup to v2 with the
+//      password just entered, and return the code.
+//   3. Otherwise return { status: 'needs-code' } so the UI can ask for the
+//      code once (createPasswordBackupFromCode then stores it in a v2
+//      backup, and the typed code itself is what gets shown).
+// A wrong password against an existing backup throws PasswordBackupError.
+export async function revealRecoveryCode(supabase, userId, password) {
+  const identity = await loadChatIdentity(supabase, userId);
+  if (!identity.publicKey || !identity.encryptedPrivateKey) return { status: 'no-identity' };
+  const { available, row } = await passwordBackupRow(supabase, userId);
+  if (available && row && row.public_key_fingerprint === identity.fingerprint) {
+    const { privateJwk, recoveryCode } = await unwrapPrivateKey(row, userId, identity.publicKey, password);
+    if (recoveryCode) return { status: 'ok', recoveryCode };
+    // v1 backup: fall through to the local pending code, and upgrade below.
+    var v1PrivateJwk = privateJwk;
+  }
+  const pending = await loadPendingRecoveryCode(userId, identity.publicKey).catch(() => '');
+  if (pending) {
+    // Verify the local code really opens this account's code-wrapped backup
+    // before showing it or baking it into a password backup.
+    const privateJwk = v1PrivateJwk || await decryptBackupPrivateJwk(
+      userId, identity.encryptedPrivateKey, pending, identity.publicKey);
+    if (password) {
+      await savePasswordBackup(supabase, userId, identity.publicKey, privateJwk, password, pending)
+        .catch(() => false);
+    }
+    return { status: 'ok', recoveryCode: pending };
+  }
+  return { status: 'needs-code' };
+}
+
 // Re-wrap the existing backup after an in-app password change: unlock with
 // the current password, re-wrap with the new one. Best-effort by design; the
 // recovery code remains the fallback if this cannot run.
@@ -116,8 +153,8 @@ export async function rewrapPasswordBackup(supabase, userId, publicKey, currentP
   if (!available || !row) return false;
   const fingerprint = await fingerprintPublicKey(publicKey);
   if (row.public_key_fingerprint !== fingerprint) return false;
-  const { privateJwk } = await unwrapPrivateKey(row, userId, publicKey, currentPassword);
-  return savePasswordBackup(supabase, userId, publicKey, privateJwk, newPassword);
+  const { privateJwk, recoveryCode } = await unwrapPrivateKey(row, userId, publicKey, currentPassword);
+  return savePasswordBackup(supabase, userId, publicKey, privateJwk, newPassword, recoveryCode);
 }
 
 async function keyRow(supabase, userId) {
@@ -170,7 +207,8 @@ export async function registerChatIdentity(supabase, userId, password = '') {
   let passwordBackupSaved = false;
   if (password) {
     passwordBackupSaved = await savePasswordBackup(
-      supabase, userId, identity.publicKey, identity.privateJwk, password).catch(() => false);
+      supabase, userId, identity.publicKey, identity.privateJwk, password,
+      identity.recoveryCode).catch(() => false);
   }
   return {
     status: 'ready', publicKey: identity.publicKey,
@@ -197,7 +235,8 @@ export async function resetChatIdentity(supabase, userId, password = '') {
   let passwordBackupSaved = false;
   if (password) {
     passwordBackupSaved = await savePasswordBackup(
-      supabase, userId, identity.publicKey, identity.privateJwk, password).catch(() => false);
+      supabase, userId, identity.publicKey, identity.privateJwk, password,
+      identity.recoveryCode).catch(() => false);
   }
   return {
     status: 'ready', publicKey: identity.publicKey,

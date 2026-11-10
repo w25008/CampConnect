@@ -44,6 +44,33 @@ test('backup is bound to the account and to the chat key', async () => {
     /does not match/);
 });
 
+test('v2 payload stores the recovery code inside the encrypted backup', async () => {
+  const identity = await createChatIdentity(alice);
+  const blob = await wrapPrivateKey(identity.privateJwk, alice, identity.publicKey, PASSWORD, identity.recoveryCode);
+  // Row version stays 1 (the DB check constraint requires it); the code must
+  // not appear anywhere in the stored row in plaintext.
+  assert.equal(blob.version, 1);
+  assert.equal(JSON.stringify(blob).includes(identity.recoveryCode), false);
+  const { privateKey, privateJwk, recoveryCode } = await unwrapPrivateKey(blob, alice, identity.publicKey, PASSWORD);
+  assert.equal(recoveryCode, identity.recoveryCode);
+  assert.equal(privateJwk.d, identity.privateJwk.d);
+  assert.equal(await privateKeyMatchesPublic(privateKey, identity.publicKey), true);
+  // A wrong password cannot reach the code either.
+  await assert.rejects(
+    unwrapPrivateKey(blob, alice, identity.publicKey, 'not-the-password'),
+    PasswordBackupError);
+});
+
+test('legacy v1 payload (bare JWK) still unwraps, with an empty recovery code', async () => {
+  const identity = await createChatIdentity(alice);
+  // wrapPrivateKey without a recovery code produces the legacy bare-JWK shape.
+  const blob = await wrapPrivateKey(identity.privateJwk, alice, identity.publicKey, PASSWORD);
+  const { privateKey, privateJwk, recoveryCode } = await unwrapPrivateKey(blob, alice, identity.publicKey, PASSWORD);
+  assert.equal(recoveryCode, '');
+  assert.equal(privateJwk.d, identity.privateJwk.d);
+  assert.equal(await privateKeyMatchesPublic(privateKey, identity.publicKey), true);
+});
+
 test('deriveWrappingKey is salted and password-sensitive', async () => {
   const saltA = new Uint8Array(32).fill(7);
   const saltB = new Uint8Array(32).fill(9);

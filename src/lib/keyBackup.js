@@ -58,21 +58,35 @@ export async function deriveWrappingKey(password, salt) {
     material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-// Wrap the private JWK. Returns the row shape stored in chat_password_backups:
-// { version, salt, iv, ciphertext, public_key_fingerprint } (base64url text).
-export async function wrapPrivateKey(privateJwk, userId, publicKey, password) {
+// Payload shapes inside the ciphertext (the DB row version stays 1 — the
+// migration checks it — so payload versioning lives in the plaintext):
+//   v1 (legacy): the bare private JWK, e.g. { kty, crv, x, y, d }.
+//   v2: { payloadVersion: 2, privateJwk, recoveryCode } — also carries the
+//   recovery-code TEXT so the Profile page can show it later after a password
+//   check. Without this the code could never be re-derived once the creation
+//   panel is gone. unwrapPrivateKey reads both shapes.
+const PAYLOAD_VERSION = 2;
+
+// Wrap the private JWK. When recoveryCode is given it is stored inside the
+// encrypted payload (v2 shape). Returns the row shape stored in
+// chat_password_backups: { version, salt, iv, ciphertext,
+// public_key_fingerprint } (base64url text).
+export async function wrapPrivateKey(privateJwk, userId, publicKey, password, recoveryCode = '') {
   const fingerprint = await fingerprintPublicKey(publicKey);
   if (!privateJwk || privateJwk.x !== publicKey.x || privateJwk.y !== publicKey.y ||
       typeof privateJwk.d !== 'string') {
     throw new Error('Chat key does not match the public key.');
   }
+  const payload = recoveryCode
+    ? { payloadVersion: PAYLOAD_VERSION, privateJwk, recoveryCode }
+    : privateJwk;
   const context = passwordBackupContext(userId, fingerprint);
   const salt = randomBytes(32);
   const iv = randomBytes(12);
   const wrappingKey = await deriveWrappingKey(password, salt);
   const ciphertext = await webCrypto().subtle.encrypt(
     { name: 'AES-GCM', iv, additionalData: encoder.encode(context) },
-    wrappingKey, encoder.encode(JSON.stringify(privateJwk)));
+    wrappingKey, encoder.encode(JSON.stringify(payload)));
   return {
     version: VERSION,
     salt: toBase64Url(salt),
@@ -82,9 +96,11 @@ export async function wrapPrivateKey(privateJwk, userId, publicKey, password) {
   };
 }
 
-// Unwrap a blob produced by wrapPrivateKey. Returns { privateKey, privateJwk }
-// where privateKey is the usual nonextractable ECDH CryptoKey. A wrong
-// password (or a blob for another account/key) throws PasswordBackupError.
+// Unwrap a blob produced by wrapPrivateKey. Returns { privateKey, privateJwk,
+// recoveryCode } where privateKey is the usual nonextractable ECDH CryptoKey
+// and recoveryCode is '' for legacy v1 payloads (the code was never stored).
+// A wrong password (or a blob for another account/key) throws
+// PasswordBackupError.
 export async function unwrapPrivateKey(blob, userId, publicKey, password) {
   const fingerprint = await fingerprintPublicKey(publicKey);
   if (!blob || blob.version !== VERSION || blob.public_key_fingerprint !== fingerprint) {
@@ -95,20 +111,23 @@ export async function unwrapPrivateKey(blob, userId, publicKey, password) {
   if (salt.length !== 32 || iv.length !== 12) throw new Error('Invalid chat key password backup.');
   const context = passwordBackupContext(userId, fingerprint);
   const wrappingKey = await deriveWrappingKey(password, salt);
-  let privateJwk;
+  let parsed;
   try {
     const plaintext = await webCrypto().subtle.decrypt(
       { name: 'AES-GCM', iv, additionalData: encoder.encode(context) },
       wrappingKey, fromBase64Url(blob.ciphertext));
-    privateJwk = JSON.parse(decoder.decode(plaintext));
+    parsed = JSON.parse(decoder.decode(plaintext));
   } catch {
     throw new PasswordBackupError();
   }
+  const isV2 = parsed?.payloadVersion === PAYLOAD_VERSION && parsed.privateJwk;
+  const privateJwk = isV2 ? parsed.privateJwk : parsed;
+  const recoveryCode = isV2 && typeof parsed.recoveryCode === 'string' ? parsed.recoveryCode : '';
   if (!privateJwk || privateJwk.x !== publicKey.x || privateJwk.y !== publicKey.y ||
       typeof privateJwk.d !== 'string') {
     throw new Error('Chat key password backup does not match the public key.');
   }
   const privateKey = await webCrypto().subtle.importKey('jwk', privateJwk,
     { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
-  return { privateKey, privateJwk };
+  return { privateKey, privateJwk, recoveryCode };
 }
