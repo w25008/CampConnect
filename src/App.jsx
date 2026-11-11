@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound } from 'lucide-react';
+import { Heart, MessageCircle, Send, Trash2, UserPlus, UserCheck, Home, Users, Mail, LogOut, RefreshCw, Search, Sparkles, Bell, Sun, Moon, User, Pencil, GraduationCap, BookOpen, Cake, MapPin, Calendar, Camera, ImagePlus, X, MoreHorizontal, Info, Plus, Flag, ChevronLeft, ChevronRight, Share2, Link, ArrowLeft, Check, CheckCheck, Shield, UsersRound, Bookmark, FolderInput, Folder, KeyRound, Reply, Forward } from 'lucide-react';
 import { supabase, openedFromRecoveryLink } from './lib/supabase.js';
-import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, loadEncryptedConversation, sendEncryptedMessage, recoverChatIdentityWithPassword, passwordBackupStatus, refreshPasswordBackupAfterRestore, createPasswordBackupFromCode, rewrapPasswordBackup, revealRecoveryCode, ensureChatIdentity, PasswordBackupError } from './lib/chatApi.js';
+import { loadChatIdentity, registerChatIdentity, recoverChatIdentity, resetChatIdentity, loadEncryptedConversation, sendEncryptedMessage, editEncryptedMessage, deleteEncryptedMessage, getRecipientChatKey, recoverChatIdentityWithPassword, passwordBackupStatus, refreshPasswordBackupAfterRestore, createPasswordBackupFromCode, rewrapPasswordBackup, revealRecoveryCode, ensureChatIdentity, PasswordBackupError, MessageActionsSetupError } from './lib/chatApi.js';
 import { clearLocalChatIdentity } from './lib/e2ee.js';
 import { buildAudienceEditPayload } from './lib/postAudience.js';
 import { orderVisibleSavedPosts } from './lib/savedPosts.js';
@@ -345,6 +345,12 @@ export default function App() {
   const avatarInput = useRef(null);
   const groupAvatarInput = useRef(null);
   const [messageText, setMessageText] = useState('');
+  const [replyToMessage, setReplyToMessage] = useState(null); // decrypted DM quoted by the next send
+  const [editingMessage, setEditingMessage] = useState(null); // own DM loaded into the composer for editing
+  const [forwardState, setForwardState] = useState(null); // { text, membersOnly } while the forward picker is open
+  const [forwardQuery, setForwardQuery] = useState('');
+  const [boardReply, setBoardReply] = useState(null); // group board post quoted by the next board post
+  const [commentQuote, setCommentQuote] = useState({}); // postId -> comment quoted by the next comment
   const [chatIdentity, setChatIdentity] = useState(null);
   const [chatKeyLoading, setChatKeyLoading] = useState(false);
   const [recoveryInput, setRecoveryInput] = useState('');
@@ -595,9 +601,18 @@ export default function App() {
   }, [userId, tab, memberQuery]);
   const loadComments = useCallback(async postId => {
     setLoadingComments(prev => ({ ...prev, [postId]: true }));
-    const { data, error: err } = await supabase.from('comments')
-      .select('id,post_id,author_id,body,image_path,sticker_id,created_at')
+    // quoted_comment_id arrives with migration 0023; until then the column
+    // does not exist, so fall back to the pre-0023 column list (comments
+    // then simply render without quotes).
+    const columns = 'id,post_id,author_id,body,image_path,sticker_id,created_at';
+    let { data, error: err } = await supabase.from('comments')
+      .select(`${columns},quoted_comment_id`)
       .eq('post_id', postId).order('created_at', { ascending: false }).limit(100);
+    if (err && /quoted_comment_id/.test(err.message || '')) {
+      ({ data, error: err } = await supabase.from('comments')
+        .select(columns)
+        .eq('post_id', postId).order('created_at', { ascending: false }).limit(100));
+    }
     if (err) { setError(commentErrorText(err)); }
     else {
       const rows = (data || []).reverse();
@@ -1109,10 +1124,24 @@ export default function App() {
     if (!body || body.length > MAX_POST || !currentGroup) return;
     setBusy('board'); setError('');
     try {
-      const { error: err } = await supabase.rpc('create_audience_post', {
-        p_body: body, p_audience: 'group', p_user_ids: null, p_group_id: currentGroup.id, p_image_paths: [],
-      });
-      if (err) throw err;
+      if (boardReply) {
+        // Quote-reply: the RPC snapshots the quoted post's text server-side.
+        const { error: err } = await supabase.rpc('create_quoted_group_post', {
+          p_body: body, p_group_id: currentGroup.id, p_quoted_post_id: boardReply.id,
+        });
+        if (err) {
+          if (err.code === 'PGRST202' || /could not find the function/i.test(err.message || '')) {
+            throw new Error(t('errMessageActionsSetup'));
+          }
+          throw err;
+        }
+        setBoardReply(null);
+      } else {
+        const { error: err } = await supabase.rpc('create_audience_post', {
+          p_body: body, p_audience: 'group', p_user_ids: null, p_group_id: currentGroup.id, p_image_paths: [],
+        });
+        if (err) throw err;
+      }
       setBoardText(''); await loadCommunity();
     } catch (err) { setError(err.message || t('errAction')); }
     finally { setBusy(''); }
@@ -1304,11 +1333,21 @@ export default function App() {
     let saved = false;
     try {
       if (media.image) imagePath = await uploadCommentImage(media.image.file);
-      const { error: err } = await supabase.from('comments').insert({
+      const quote = commentQuote[id];
+      const row = {
         post_id: id, author_id: userId, body, image_path: imagePath, sticker_id: media.stickerId || null,
-      });
+        ...(quote ? { quoted_comment_id: quote.id } : {}),
+      };
+      let { error: err } = await supabase.from('comments').insert(row);
+      // Pre-0023 databases reject the unknown column; retry without the
+      // quote so commenting itself never breaks before the migration runs.
+      if (err && quote && /quoted_comment_id/.test(err.message || '')) {
+        delete row.quoted_comment_id;
+        ({ error: err } = await supabase.from('comments').insert(row));
+      }
       if (err) throw err;
       saved = true;
+      if (quote) setCommentQuote(prev => ({ ...prev, [id]: null }));
       if (media.image) dropPreviews([media.image]);
       setCommentText(prev => ({ ...prev, [id]: '' }));
       setCommentMedia(prev => ({ ...prev, [id]: { image: null, stickerId: '' } }));
@@ -1360,15 +1399,67 @@ export default function App() {
     } catch (err) { setError(commentErrorText(err)); }
     finally { setBusy(''); }
   }
+  // Switching conversations abandons any half-written reply/edit.
+  useEffect(() => { setReplyToMessage(null); setEditingMessage(null); }, [recipient]);
+  function messageActionError(err) {
+    if (err instanceof MessageActionsSetupError) return t('errMessageActionsSetup');
+    return err.message || t('errMessage');
+  }
   async function sendMessage(e) {
     e.preventDefault(); const body = messageText.trim();
     if (!recipient || !body || body.length > MAX_MESSAGE) return;
     if (!recipientFingerprint) { setError(t('contactKeyMissing')); return; }
     setBusy('message'); setError('');
     try {
-      await sendEncryptedMessage(supabase, userId, recipient, body, chatIdentity, recipientFingerprint);
+      if (editingMessage) {
+        await editEncryptedMessage(supabase, userId, editingMessage, body, chatIdentity);
+        setEditingMessage(null);
+      } else {
+        const meta = replyToMessage ? {
+          replyTo: { id: replyToMessage.id, senderId: replyToMessage.sender_id, snippet: replyToMessage.text },
+        } : null;
+        await sendEncryptedMessage(supabase, userId, recipient, body, chatIdentity, recipientFingerprint, meta);
+        setReplyToMessage(null);
+      }
       setMessageText(''); await loadMessages();
-    } catch (err) { setError(err.message || t('errMessage')); }
+    } catch (err) { setError(messageActionError(err)); }
+    finally { setBusy(''); }
+  }
+  function startReplyMessage(message) {
+    setEditingMessage(null);
+    setReplyToMessage(message);
+  }
+  function startEditMessage(message) {
+    setReplyToMessage(null);
+    setEditingMessage(message);
+    setMessageText(message.text);
+  }
+  async function removeMessage(message) {
+    setBusy('message-delete'); setError('');
+    try {
+      await deleteEncryptedMessage(supabase, message.id);
+      if (editingMessage?.id === message.id) { setEditingMessage(null); setMessageText(''); }
+      if (replyToMessage?.id === message.id) setReplyToMessage(null);
+      await loadMessages();
+    } catch (err) { setError(messageActionError(err)); }
+    finally { setBusy(''); }
+  }
+  // Forwarding re-encrypts the decrypted text on this device to the chosen
+  // student, marked as forwarded inside the new message's ciphertext. For a
+  // group board post the caller restricts the picker to group members, so
+  // group content never travels to someone outside the group.
+  async function forwardMessageTo(person) {
+    const state = forwardState;
+    if (!state) return;
+    setForwardState(null); setForwardQuery('');
+    setBusy('message'); setError('');
+    try {
+      const key = await getRecipientChatKey(supabase, person.id);
+      if (!key) throw new Error('This student has not enabled encrypted chat yet.');
+      await sendEncryptedMessage(supabase, userId, person.id, state.text, chatIdentity, key.fingerprint, { forwarded: true });
+      if (person.id === recipient) await loadMessages();
+      setFlash(t('forwarded'));
+    } catch (err) { setError(messageActionError(err)); }
     finally { setBusy(''); }
   }
   async function enableChat() {
@@ -1683,6 +1774,7 @@ export default function App() {
           <small>{editingPost.body.length}/{MAX_POST}</small>
         </div><div className="form-actions-inline"><button type="button" className="secondary" disabled={busy !== ''} onClick={cancelEditPost}>{t('cancel')}</button><button className="primary" disabled={busy !== '' || (!editingPost.body.trim() && !editingPost.keep.length && !editingPost.added.length)}>{busy === 'edit' ? t('saving') : t('saveProfile')}</button></div></div>
       </form> : <>
+        {post.quoted_body && <div className="quote-block"><small><Name profile={profileMap.get(post.quoted_author_id)}/></small><p>{snip(post.quoted_body, 140)}</p></div>}
         {post.body && <TranslatableText text={post.body} t={t} lang={lang} className="post-body"/>}
         {images.length > 0 && <div className={`post-images count-${Math.min(images.length, 4)}`}>{images.slice(0, 4).map((p, i) => <button type="button" key={p} className="post-image-cell" onClick={() => setLightbox({ paths: images, index: i, post })} aria-label={t('openImage', { i: i + 1, n: images.length })}><img src={publicUrl(POST_IMAGE_BUCKET, p)} alt={t('postImageAlt')} loading="lazy"/></button>)}</div>}
       </>}
@@ -1713,6 +1805,7 @@ export default function App() {
                 <button type="button" className="icon-button danger-text" disabled={busy !== ''} aria-label={t('deleteComment')} title={t('deleteComment')} onClick={() => askConfirm(t('confirmDeleteComment'), t('deleteComment'), () => deleteComment(c, post.id))}><Trash2 size={14}/></button>
               </span>}
               {c.author_id !== userId && <button type="button" className="icon-button report-comment" aria-label={t('reportComment')} title={t('reportComment')} onClick={() => setReportTarget({ type: 'comment', id: c.id })}><Flag size={13}/></button>}
+              {!isEditing && <button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('reply')} title={t('reply')} onClick={() => setCommentQuote(prev => ({ ...prev, [post.id]: c }))}><Reply size={14}/></button>}
               {isEditing ? <form className="comment-edit-form" onSubmit={saveComment}>
                 <input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={editingComment.body} onChange={e => setEditingComment(prev => ({ ...prev, body: e.target.value }))}/>
                 {(editingComment.image?.preview || editingComment.imagePath || editingComment.stickerId) && <div className="comment-attachment-preview">
@@ -1727,6 +1820,7 @@ export default function App() {
                 </div>
                 {stickerPickerPost === pickerKey && <div className="comment-sticker-picker" role="group" aria-label={t('addSticker')}>{COMMENT_STICKERS.map(sticker => <button key={sticker.id} type="button" className={selectedSticker === sticker.id ? 'selected' : ''} disabled={busy !== ''} aria-label={`${t('addSticker')} ${sticker.emoji}`} title={sticker.emoji} onClick={() => chooseCommentSticker(post.id, sticker.id)}>{sticker.emoji}</button>)}</div>}
               </form> : <>
+                {c.quoted_comment_id && (() => { const quoted = postComments.find(q => q.id === c.quoted_comment_id); return <div className="quote-block">{quoted ? <><small><Name profile={profileMap.get(quoted.author_id)}/></small><p>{snip(quoted.body || '', 140) || t('quotedMessageUnavailable')}</p></> : <p>{t('quotedMessageUnavailable')}</p>}</div>; })()}
                 {c.body && <TranslatableText text={c.body} t={t} lang={lang}/>}
                 {c.image_path && <img className="comment-image" src={publicUrl(POST_IMAGE_BUCKET, c.image_path)} alt={t('commentImageAlt')} loading="lazy"/>}
                 {c.sticker_id && <div className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === c.sticker_id)?.emoji}</div>}
@@ -1740,6 +1834,7 @@ export default function App() {
           {commentMedia[post.id]?.stickerId && <span className="comment-sticker">{COMMENT_STICKERS.find(item => item.id === commentMedia[post.id].stickerId)?.emoji}</span>}
         </div>}
         {stickerPickerPost === post.id && <div className="comment-sticker-picker" role="group" aria-label={t('addSticker')}>{COMMENT_STICKERS.map(sticker => <button key={sticker.id} type="button" className={commentMedia[post.id]?.stickerId === sticker.id ? 'selected' : ''} disabled={busy !== ''} aria-label={`${t('addSticker')} ${sticker.emoji}`} title={sticker.emoji} onClick={() => chooseCommentSticker(post.id, sticker.id)}>{sticker.emoji}</button>)}</div>}
+        {commentQuote[post.id] && <div className="quote-banner"><Reply size={14}/><span className="quote-banner-text"><strong><Name profile={profileMap.get(commentQuote[post.id].author_id)}/></strong> {snip(commentQuote[post.id].body || '', 80)}</span><button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('cancel')} title={t('cancel')} onClick={() => setCommentQuote(prev => ({ ...prev, [post.id]: null }))}><X size={14}/></button></div>}
         <form onSubmit={e => addComment(e, post.id, post.audience)} className="comment-form">
           <input aria-label={t('writeComment')} maxLength={MAX_COMMENT} placeholder={t('writeComment')} value={commentText[post.id] || ''} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))}/>
           <button type="button" className="icon-button" disabled={busy !== '' || post.audience !== 'school'} aria-label={t('addImage')} title={t('addImage')} onClick={() => commentImageInputs.current[post.id]?.click()}><ImagePlus size={18}/></button>
@@ -1841,6 +1936,8 @@ export default function App() {
       : savedPostIds.filter(id => savedPostCollections[id] === savedCollectionFilter);
   const currentGroup = groups.find(group => group.id === activeGroup) || groups[0];
   const currentGroupId = currentGroup?.id || '';
+  // Switching groups abandons a half-written board quote-reply.
+  useEffect(() => { setBoardReply(null); }, [currentGroupId]);
   const groupPosts = groupHistory.id === currentGroupId ? groupHistory.posts : [];
   const lastGroupPost = groupId => groupPreviews[groupId];
   const sortedGroups = [...groups].sort((a, b) => new Date(lastGroupPost(b.id)?.created_at || b.created_at) - new Date(lastGroupPost(a.id)?.created_at || a.created_at));
@@ -1899,6 +1996,14 @@ export default function App() {
   const lastMineIndex = messages.map(m => m.sender_id === userId).lastIndexOf(true);
   const shareCandidates = others.filter(p => {
     const q = shareQuery.trim().toLowerCase();
+    return !q || display(p).toLowerCase().includes(q) || p.handle?.toLowerCase().includes(q);
+  });
+  // Forward picker: any contact for a direct message; for a group board
+  // post, only students who belong to that group (privacy — the post must
+  // not travel outside the group that can already see it).
+  const forwardCandidates = !forwardState ? [] : others.filter(p => {
+    if (forwardState.membersOnly && !currentGroupMembers.some(member => member.user_id === p.id)) return false;
+    const q = forwardQuery.trim().toLowerCase();
     return !q || display(p).toLowerCase().includes(q) || p.handle?.toLowerCase().includes(q);
   });
   if (!supabase) return <div className="auth-wrap"><div className="auth-card"><div className="brand">CampConnect</div><h1>{t('connectDbTitle')}</h1><p className="muted">{t('connectDbBody')}</p></div></div>;
@@ -2024,15 +2129,19 @@ export default function App() {
               {groupPosts.map(post => { const mine = post.author_id === userId; const author = profileMap.get(post.author_id);
                 return <div key={post.id} className={`message-row ${mine ? 'mine' : ''}`} id={`post-${post.id}`}>
                   {!mine && <small className="group-sender"><Avatar profile={author}/> <Name profile={author}/></small>}
-                  <div className={`message ${mine ? 'mine' : ''}`}><p>{renderMessageBody(post.body)}</p>{postImagePaths(post).length > 0 && <div className="group-bubble-images">{postImagePaths(post).map(img => <img key={img} src={publicUrl(POST_IMAGE_BUCKET, img)} alt={t('postImageAlt')}/>)}</div>}
+                  <div className={`message ${mine ? 'mine' : ''}`}>{post.quoted_body && <div className="quote-block"><small><Name profile={profileMap.get(post.quoted_author_id)}/></small><p>{snip(post.quoted_body, 140)}</p></div>}<p>{renderMessageBody(post.body)}</p>{postImagePaths(post).length > 0 && <div className="group-bubble-images">{postImagePaths(post).map(img => <img key={img} src={publicUrl(POST_IMAGE_BUCKET, img)} alt={t('postImageAlt')}/>)}</div>}
                     <small>{when(post.created_at)}{post.edited_at && ` · ${t('edited')}`}</small></div>
                   <div className="group-bubble-actions">
+                    <button type="button" className="icon-button" aria-label={t('reply')} title={t('reply')} disabled={busy !== ''} onClick={() => setBoardReply(post)}><Reply size={13}/></button>
+                    <button type="button" className="icon-button" aria-label={t('forward')} title={t('forward')} disabled={busy !== ''} onClick={() => { setForwardState({ text: post.body, membersOnly: true }); setForwardQuery(''); }}><Forward size={13}/></button>
+                    {mine && <button type="button" className="icon-button" aria-label={t('editPost')} title={t('editPost')} disabled={busy !== ''} onClick={() => startEditPost(post)}><Pencil size={13}/></button>}
                     <button type="button" className={`icon-button ${savedPostIds.includes(post.id) ? 'active' : ''}`} aria-label={savedPostIds.includes(post.id) ? t('unsavePost') : t('savePost')} title={savedPostIds.includes(post.id) ? t('unsavePost') : t('savePost')} disabled={busy !== ''} onClick={() => toggleSavedPost(post)}><Bookmark size={13} fill={savedPostIds.includes(post.id) ? 'currentColor' : 'none'}/></button>
                     {mine
                     ? <button type="button" className="icon-button" aria-label={t('deletePost')} title={t('deletePost')} disabled={busy !== ''} onClick={() => askConfirm(t('confirmDelete'), t('deletePost'), () => deletePost(post))}><Trash2 size={13}/></button>
                     : <button type="button" className="icon-button" aria-label={t('reportPost')} title={t('reportPost')} onClick={() => setReportTarget({ type: 'post', id: post.id })}><Flag size={13}/></button>}</div>
                 </div>; })}
             </div>
+            {boardReply && <div className="quote-banner"><Reply size={14}/><span className="quote-banner-text"><strong><Name profile={profileMap.get(boardReply.author_id)}/></strong> {snip(boardReply.body || '', 80)}</span><button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('cancel')} title={t('cancel')} onClick={() => setBoardReply(null)}><X size={14}/></button></div>}
             <form className="message-form" onSubmit={postToBoard}>
               <input aria-label={t('groupBoardPlaceholder', { name: currentGroup.name })} placeholder={t('groupBoardPlaceholder', { name: currentGroup.name })} maxLength={MAX_POST} value={boardText} onChange={e => setBoardText(e.target.value)}/>
               <button className="primary" disabled={busy !== '' || !boardText.trim()} aria-label={t('post')}><Send size={17}/></button>
@@ -2062,7 +2171,7 @@ export default function App() {
         {!chatKeyLoading && chatIdentity?.status === 'restore' && <div className="panel chat-setup"><Shield size={28}/><h2>{t('restorePrivateChat')}</h2><p>{t('restorePrivateChatNote')}</p>{pwBackup === 'current' && <><form onSubmit={restoreChatWithPassword} className="stack-form"><label>{t('password')}<input required type="password" autoComplete="current-password" value={restorePassword} onChange={e => setRestorePassword(e.target.value)}/></label>{pwRestoreError && <p className="error-text" role="alert">{pwRestoreError}</p>}<button className="primary" disabled={busy !== ''}>{busy === 'chat-restore-password' ? t('pleaseWait') : t('restoreWithPassword')}</button></form><p className="muted">{t('restorePasswordHint')}</p></>}{(pwBackup === 'none' || pwBackup === 'stale') && <p className="muted">{t('noPasswordBackup')}</p>}<form onSubmit={restoreChat} className="stack-form"><label>{t('recoveryCode')}<input required value={recoveryInput} onChange={e => setRecoveryInput(e.target.value)} autoComplete="off"/></label><button className="primary" disabled={busy !== ''}>{busy === 'chat-restore' ? t('pleaseWait') : t('restoreChat')}</button></form><div className="reset-chat"><p className="muted">{t('lostRecoveryNote')}</p><button className="secondary" disabled={busy !== ''} onClick={resetChat}>{t('resetChatKey')}</button></div></div>}
         {!chatKeyLoading && chatIdentity?.status === 'ready' && <>
           <div className="chat-security-note"><Shield size={17}/><span>{t('chatSecurityNote')}</span></div>
-          <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel notranslate" translate="no" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong><Name profile={profileMap.get(recipient)}/></strong></PersonLink><button className="secondary block-button" disabled={busy !== ''} onClick={toggleBlock}>{blockedIds.includes(recipient) ? t('unblock') : t('block')}</button><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="key-fingerprints"><small>{t('yourChatKey')}: <code>{chatIdentity.fingerprint}</code></small><small>{t('contactChatKey')}: {recipientFingerprint ? <code>{recipientFingerprint}</code> : t('contactKeyMissing')}</small>{recipientFingerprint && recipientKeyChanged && <div className="verify-key key-changed" role="status"><p>{t('contactKeyChanged')}</p><button className="secondary" onClick={acceptRecipientKey}>{t('dismissKeyChange')}</button></div>}{recipientFingerprint && verifiedRecipientFingerprint !== recipientFingerprint && <details className="verify-key"><summary>{t('optionalVerify')}</summary><p>{t('compareContactKey')}</p><button className="secondary" onClick={verifyRecipientKey}>{t('verifiedContactKey')}</button></details>}{recipientFingerprint && verifiedRecipientFingerprint === recipientFingerprint && <small className="verified-key">{t('contactKeyVerified')}</small>}</div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => <div key={m.id} className={`message-row ${m.sender_id === userId ? 'mine' : ''}`}><div className={`message ${m.sender_id === userId ? 'mine' : ''} ${m.failed ? 'message-failed' : ''}`}><p>{m.failed ? m.text : renderMessageBody(m.text)}</p>{m.legacy && <small>{t('legacyMessage')}</small>}<small>{when(m.created_at)}</small></div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(localeFor(lang), { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>)}</div><form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={!recipientKey ? t('contactKeyMissing') : t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)} disabled={!recipientKey || blockedIds.includes(recipient)}/><button className="primary" disabled={busy !== '' || !messageText.trim() || !recipientKey || blockedIds.includes(recipient)} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>
+          <div className="messages-layout"><div className="contact-list panel"><h2>{t('newConversation')}</h2><p className="muted">{t('chooseMember')}</p>{contacts.map(p => <button key={p.id} className={`contact ${recipient === p.id ? 'selected' : ''}`} onClick={() => { messageRequest.current += 1; setMessages([]); setRecipient(p.id); }}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span>{unreadBySender[p.id] > 0 && <span className="badge" aria-label={t('unreadCount', { n: unreadBySender[p.id] })}>{badgeText(unreadBySender[p.id])}</span>}</button>)}{others.length === 0 && <p className="muted">{t('noMembers')}</p>}</div><section className="conversation panel notranslate" translate="no" aria-label={t('conversation')}>{recipient ? <><div className="conversation-header"><PersonLink {...linkProps(recipient)} className="post-person"><Avatar profile={profileMap.get(recipient)}/><strong><Name profile={profileMap.get(recipient)}/></strong></PersonLink><button className="secondary block-button" disabled={busy !== ''} onClick={toggleBlock}>{blockedIds.includes(recipient) ? t('unblock') : t('block')}</button><button className="icon-button" aria-label={t('refreshMessages')} onClick={loadMessages}><RefreshCw size={17}/></button></div><div className="key-fingerprints"><small>{t('yourChatKey')}: <code>{chatIdentity.fingerprint}</code></small><small>{t('contactChatKey')}: {recipientFingerprint ? <code>{recipientFingerprint}</code> : t('contactKeyMissing')}</small>{recipientFingerprint && recipientKeyChanged && <div className="verify-key key-changed" role="status"><p>{t('contactKeyChanged')}</p><button className="secondary" onClick={acceptRecipientKey}>{t('dismissKeyChange')}</button></div>}{recipientFingerprint && verifiedRecipientFingerprint !== recipientFingerprint && <details className="verify-key"><summary>{t('optionalVerify')}</summary><p>{t('compareContactKey')}</p><button className="secondary" onClick={verifyRecipientKey}>{t('verifiedContactKey')}</button></details>}{recipientFingerprint && verifiedRecipientFingerprint === recipientFingerprint && <small className="verified-key">{t('contactKeyVerified')}</small>}</div><div className="message-list" aria-live="polite">{messages.length === 0 && <div className="empty-message">{t('noMessages')}</div>}{messages.map((m, i) => { const mine = m.sender_id === userId; const quotedTarget = m.replyTo ? messages.find(q => q.id === m.replyTo.id) : null; return <div key={m.id} className={`message-row ${mine ? 'mine' : ''}`}><div className={`message ${mine ? 'mine' : ''} ${m.failed ? 'message-failed' : ''}`}>{m.forwarded && <small className="forwarded-label"><Forward size={12}/> {t('forwarded')}</small>}{m.replyTo && <div className="quote-block"><small><Name profile={profileMap.get(m.replyTo.senderId)}/></small><p>{quotedTarget && !quotedTarget.failed ? snip(quotedTarget.text, 140) : (m.replyTo.snippet || t('quotedMessageUnavailable'))}</p></div>}<p>{m.failed ? m.text : renderMessageBody(m.text)}</p>{m.legacy && <small>{t('legacyMessage')}</small>}<small>{when(m.created_at)}{m.edited_at && ` · ${t('edited')}`}</small>{!m.failed && <span className="message-actions"><button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('reply')} title={t('reply')} onClick={() => startReplyMessage(m)}><Reply size={13}/></button><button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('forward')} title={t('forward')} onClick={() => { setForwardState({ text: m.text, membersOnly: false }); setForwardQuery(''); }}><Forward size={13}/></button>{mine && m.encryption_version === 1 && <button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('editMessage')} title={t('editMessage')} onClick={() => startEditMessage(m)}><Pencil size={13}/></button>}{mine && <button type="button" className="icon-button danger-text" disabled={busy !== ''} aria-label={t('deleteMessage')} title={t('deleteMessage')} onClick={() => askConfirm(t('confirmDeleteMessage'), t('deleteMessage'), () => removeMessage(m))}><Trash2 size={13}/></button>}</span>}</div>{i === lastMineIndex && 'read_at' in m && <span className={`message-status ${m.read_at ? 'seen' : ''}`}>{m.read_at ? <><CheckCheck size={14}/> {t('seen')} · {new Date(m.read_at).toLocaleTimeString(localeFor(lang), { hour: 'numeric', minute: '2-digit' })}</> : <><Check size={14}/> {t('sent')}</>}</span>}</div>; })}</div>{(replyToMessage || editingMessage) && <div className="quote-banner">{editingMessage ? <Pencil size={14}/> : <Reply size={14}/>}<span className="quote-banner-text">{editingMessage ? <>{t('editMessage')}: {snip(editingMessage.text, 80)}</> : <><strong><Name profile={profileMap.get(replyToMessage.sender_id)}/></strong> {snip(replyToMessage.text, 80)}</>}</span><button type="button" className="icon-button" disabled={busy !== ''} aria-label={t('cancel')} title={t('cancel')} onClick={() => { setReplyToMessage(null); if (editingMessage) { setEditingMessage(null); setMessageText(''); } }}><X size={14}/></button></div>}<form className="message-form" onSubmit={sendMessage}><input aria-label={t('writeMessage')} placeholder={!recipientKey ? t('contactKeyMissing') : t('writeMessage')} maxLength={MAX_MESSAGE} value={messageText} onChange={e => setMessageText(e.target.value)} disabled={!recipientKey || blockedIds.includes(recipient)}/><button className="primary" disabled={busy !== '' || !messageText.trim() || !recipientKey || blockedIds.includes(recipient)} aria-label={t('sendMessage')}><Send size={17}/></button></form></> : <div className="empty-message"><Mail size={28}/><p>{t('selectSomeone')}</p></div>}</section></div>
         </>}
       </>}
       {tab === 'profile' && renderProfile()}
@@ -2081,6 +2190,17 @@ export default function App() {
           {shareCandidates.map(p => <button key={p.id} type="button" className="contact" onClick={() => sendShare(p)}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span><Send size={16} className="share-send"/></button>)}
         </div>
         <div className="form-actions-inline"><button className="secondary" onClick={() => { setShareTarget(null); setShareQuery(''); }}>{t('cancel')}</button></div>
+      </div>
+    </div>}
+    {forwardState && <div className="modal-backdrop" onClick={() => { setForwardState(null); setForwardQuery(''); }}>
+      <div className="modal panel share-modal" role="dialog" aria-modal="true" aria-label={t('forwardTo')} onClick={e => e.stopPropagation()}>
+        <h2>{t('forwardTo')}</h2>
+        <label className="search-box"><Search size={17}/><input autoFocus value={forwardQuery} onChange={e => setForwardQuery(e.target.value)} placeholder={t('searchPeople')} aria-label={t('searchPeople')}/></label>
+        <div className="share-list">
+          {forwardCandidates.length === 0 && <p className="muted">{t('noMatch')}</p>}
+          {forwardCandidates.map(p => <button key={p.id} type="button" className="contact" disabled={busy !== ''} onClick={() => forwardMessageTo(p)}><Avatar profile={p}/><span><strong><Name profile={p}/></strong><small translate="no">@{p.handle}</small></span><Forward size={16} className="share-send"/></button>)}
+        </div>
+        <div className="form-actions-inline"><button className="secondary" onClick={() => { setForwardState(null); setForwardQuery(''); }}>{t('cancel')}</button></div>
       </div>
     </div>}
     {reportTarget && <ReportDialog t={t} busy={busy !== ''} onCancel={() => setReportTarget(null)} onSubmit={submitReport}/>}
