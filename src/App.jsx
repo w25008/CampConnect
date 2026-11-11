@@ -2138,7 +2138,6 @@ export default function App() {
                     <small>{when(post.created_at)}{post.edited_at && ` · ${t('edited')}`}</small></div>
                   <span className={`msg-tools ${menuPost === `grp:${post.id}` ? 'open' : ''}`}>
                     <button type="button" className="icon-button" aria-label={t('reply')} title={t('reply')} disabled={busy !== ''} onClick={() => setBoardReply(post)}><Reply size={15}/></button>
-                    <button type="button" className={`icon-button ${savedPostIds.includes(post.id) ? 'active' : ''}`} aria-label={savedPostIds.includes(post.id) ? t('unsavePost') : t('savePost')} title={savedPostIds.includes(post.id) ? t('unsavePost') : t('savePost')} disabled={busy !== ''} onClick={() => toggleSavedPost(post)}><Bookmark size={15} fill={savedPostIds.includes(post.id) ? 'currentColor' : 'none'}/></button>
                     <span className="msg-menu-wrap">
                       <button type="button" className="icon-button" aria-label={t('messageOptions')} title={t('messageOptions')} aria-haspopup="menu" aria-expanded={menuPost === `grp:${post.id}`} disabled={busy !== ''} onClick={e => { e.stopPropagation(); setMenuPost(menuPost === `grp:${post.id}` ? '' : `grp:${post.id}`); }}><MoreHorizontal size={15}/></button>
                       {menuPost === `grp:${post.id}` && <div className="menu panel msg-menu" role="menu">
