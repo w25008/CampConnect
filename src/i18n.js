@@ -58,6 +58,7 @@ const STRINGS = {
     errCommentSetup: 'Comment media and editing need a database update. Ask the site admin to apply supabase/migrations/0019_comment_media_and_editing.sql after the earlier migrations.',
     // Post options, editing, several images
     postOptions: 'Post options',
+    messageOptions: 'Message options',
     editPost: 'Edit post',
     edited: 'edited',
     imagesLimit: 'You can add up to {n} images per post.',
@@ -447,6 +448,7 @@ const STRINGS = {
     errImageSetup: '画像のアップロードがまだ設定されていません。管理者に supabase/migrations/0005_images.sql を実行してもらってください。',
     errCommentSetup: 'コメントの画像・編集にはデータベースの更新が必要です。以前のマイグレーションの後に、supabase/migrations/0019_comment_media_and_editing.sql を適用してもらってください。',
     postOptions: '投稿のオプション',
+    messageOptions: 'メッセージのオプション',
     editPost: '投稿を編集',
     edited: '編集済み',
     imagesLimit: '1つの投稿に追加できる画像は{n}枚までです。',
@@ -721,6 +723,7 @@ const STRINGS = {
     errCommentSetup: "မှတ်ချက် မီဒီယာနှင့် ပြင်ဆင်ခြင်းအတွက် ဒေတာဘေ့စ် အပ်ဒိတ်လိုအပ်သည်။ ဆိုက်စီမံခန့်ခွဲသူအား ယခင် migrations များအပြီးတွင် supabase/migrations/0019_comment_media_and_editing.sql ကို apply လုပ်ရန် တောင်းဆိုပါ။",
     // Post options, editing, several images
     postOptions: "ပို့စ်ရွေးချယ်စရာများ",
+    messageOptions: "မက်ဆေ့ဂျ် ရွေးချယ်စရာများ",
     editPost: "ပို့စ်ပြင်ရန်",
     edited: "ပြင်ဆင်ပြီး",
     imagesLimit: "ပို့စ်တစ်ခုတွင် ပုံ {n} ပုံအထိ ထည့်နိုင်သည်။",
@@ -1058,6 +1061,7 @@ const STRINGS = {
     errCommentSetup: "Phương tiện bình luận và chỉnh sửa cần cập nhật cơ sở dữ liệu. Hãy yêu cầu quản trị viên áp dụng supabase/migrations/0019_comment_media_and_editing.sql sau các bản di chuyển trước đó.",
     // Post options, editing, several images
     postOptions: "Tùy chọn bài viết",
+    messageOptions: "Tùy chọn tin nhắn",
     editPost: "Chỉnh sửa bài viết",
     edited: "đã chỉnh sửa",
     imagesLimit: "Bạn có thể thêm tối đa {n} hình ảnh cho mỗi bài viết.",
@@ -1395,6 +1399,7 @@ const STRINGS = {
     errCommentSetup: "สื่อในความคิดเห็นและการแก้ไขต้องอัปเดตฐานข้อมูล โปรดขอให้ผู้ดูแลเว็บไซต์ใช้ supabase/migrations/0019_comment_media_and_editing.sql หลังจากการย้ายข้อมูลก่อนหน้านี้",
     // Post options, editing, several images
     postOptions: "ตัวเลือกโพสต์",
+    messageOptions: "ตัวเลือกข้อความ",
     editPost: "แก้ไขโพสต์",
     edited: "แก้ไขแล้ว",
     imagesLimit: "คุณสามารถเพิ่มรูปภาพได้สูงสุด {n} รูปต่อโพสต์",
@@ -1732,6 +1737,7 @@ const STRINGS = {
     errCommentSetup: "Media komentar dan penyuntingan memerlukan pembaruan database. Minta admin situs untuk menerapkan supabase/migrations/0019_comment_media_and_editing.sql setelah migrasi sebelumnya.",
     // Post options, editing, several images
     postOptions: "Opsi postingan",
+    messageOptions: "Opsi pesan",
     editPost: "Edit postingan",
     edited: "diedit",
     imagesLimit: "Anda dapat menambahkan hingga {n} gambar per postingan.",
@@ -2069,6 +2075,7 @@ const STRINGS = {
     errCommentSetup: "Kailangan ng update sa database para sa media at pag-edit ng komento. Hilingin sa admin ng site na ilapat ang supabase/migrations/0019_comment_media_and_editing.sql pagkatapos ng mga naunang migration.",
     // Post options, editing, several images
     postOptions: "Mga opsyon sa post",
+    messageOptions: "Mga opsyon sa mensahe",
     editPost: "I-edit ang post",
     edited: "na-edit",
     imagesLimit: "Maaari kang magdagdag ng hanggang {n} larawan bawat post.",
@@ -2406,6 +2413,7 @@ const STRINGS = {
     errCommentSetup: "មេឌៀ និងការកែសម្រួលមតិយោបល់ត្រូវការបច្ចុប្បន្នភាពមូលដ្ឋានទិន្នន័យ។ សូមសុំឱ្យអ្នកគ្រប់គ្រងគេហទំព័រអនុវត្ត supabase/migrations/0019_comment_media_and_editing.sql បន្ទាប់ពីការធ្វើចំណាកស្រុកមុនៗ។",
     // Post options, editing, several images
     postOptions: "ជម្រើសការបង្ហោះ",
+    messageOptions: "ជម្រើសសារ",
     editPost: "កែសម្រួលការបង្ហោះ",
     edited: "បានកែសម្រួល",
     imagesLimit: "អ្នកអាចបន្ថែមរូបភាពបានរហូតដល់ {n} ក្នុងមួយការបង្ហោះ។",
@@ -2743,6 +2751,7 @@ const STRINGS = {
     errCommentSetup: "ສື່ຄຳເຫັນ ແລະ ການແກ້ໄຂຕ້ອງການການອັບເດດຖານຂໍ້ມູນ. ຂໍໃຫ້ຜູ້ດູແລເວັບໄຊນຳໃຊ້ supabase/migrations/0019_comment_media_and_editing.sql ຫຼັງຈາກການ migration ກ່ອນໜ້ານີ້.",
     // Post options, editing, several images
     postOptions: "ຕົວເລືອກໂພສ",
+    messageOptions: "ຕົວເລືອກຂໍ້ຄວາມ",
     editPost: "ແກ້ໄຂໂພສ",
     edited: "ແກ້ໄຂແລ້ວ",
     imagesLimit: "ເຈົ້າສາມາດເພີ່ມຮູບພາບໄດ້ສູງສຸດ {n} ຮູບຕໍ່ໂພສ.",
@@ -3080,6 +3089,7 @@ const STRINGS = {
     errCommentSetup: "评论媒体和编辑功能需要更新数据库。请让网站管理员在之前的迁移之后应用 supabase/migrations/0019_comment_media_and_editing.sql。",
     // Post options, editing, several images
     postOptions: "帖子选项",
+    messageOptions: "消息选项",
     editPost: "编辑帖子",
     edited: "已编辑",
     imagesLimit: "每篇帖子最多可添加 {n} 张图片。",
@@ -3417,6 +3427,7 @@ const STRINGS = {
     errCommentSetup: "留言媒體與編輯功能需要更新資料庫。請要求網站管理員在完成先前的遷移後，套用 supabase/migrations/0019_comment_media_and_editing.sql。",
     // Post options, editing, several images
     postOptions: "貼文選項",
+    messageOptions: "訊息選項",
     editPost: "編輯貼文",
     edited: "已編輯",
     imagesLimit: "每篇貼文最多可新增 {n} 張圖片。",
@@ -3754,6 +3765,7 @@ const STRINGS = {
     errCommentSetup: "댓글 미디어 및 편집 기능을 사용하려면 데이터베이스 업데이트가 필요합니다. 이전 마이그레이션을 마친 후 사이트 관리자에게 supabase/migrations/0019_comment_media_and_editing.sql 적용을 요청하세요.",
     // Post options, editing, several images
     postOptions: "게시물 옵션",
+    messageOptions: "메시지 옵션",
     editPost: "게시물 편집",
     edited: "편집됨",
     imagesLimit: "게시물당 최대 {n}개의 이미지를 추가할 수 있습니다.",
@@ -4091,6 +4103,7 @@ const STRINGS = {
     errCommentSetup: "Сэтгэгдлийн медиа болон засах үйлдэлд өгөгдлийн сангийн шинэчлэлт хэрэгтэй. Өмнөх шилжилтүүдийн дараа сайтын админаас supabase/migrations/0019_comment_media_and_editing.sql-г хэрэгжүүлэхийг хүснэ үү.",
     // Post options, editing, several images
     postOptions: "Нийтлэлийн сонголтууд",
+    messageOptions: "Мессежийн сонголтууд",
     editPost: "Нийтлэл засах",
     edited: "зассан",
     imagesLimit: "Та нийтлэл бүрт {n} хүртэл зураг нэмж болно.",
@@ -4428,6 +4441,7 @@ const STRINGS = {
     errCommentSetup: "टिप्पणी मिडिया र सम्पादनका लागि डाटाबेस अपडेट आवश्यक छ। पहिलेका माइग्रेसनहरू पछि साइट प्रशासकलाई supabase/migrations/0019_comment_media_and_editing.sql लागू गर्न भन्नुहोस्।",
     // Post options, editing, several images
     postOptions: "पोस्ट विकल्पहरू",
+    messageOptions: "सन्देश विकल्पहरू",
     editPost: "पोस्ट सम्पादन गर्नुहोस्",
     edited: "सम्पादन गरिएको",
     imagesLimit: "तपाईं प्रति पोस्ट {n} वटासम्म तस्बिरहरू थप्न सक्नुहुन्छ।",
@@ -4765,6 +4779,7 @@ const STRINGS = {
     errCommentSetup: "टिप्पणी मीडिया और संपादन के लिए डेटाबेस अपडेट आवश्यक है। साइट व्यवस्थापक से पहले के माइग्रेशन के बाद supabase/migrations/0019_comment_media_and_editing.sql लागू करने के लिए कहें।",
     // Post options, editing, several images
     postOptions: "पोस्ट विकल्प",
+    messageOptions: "संदेश विकल्प",
     editPost: "पोस्ट संपादित करें",
     edited: "संपादित",
     imagesLimit: "आप प्रति पोस्ट अधिकतम {n} छवियां जोड़ सकते हैं।",
@@ -5102,6 +5117,7 @@ const STRINGS = {
     errCommentSetup: "মন্তব্যের মিডিয়া ও সম্পাদনার জন্য ডেটাবেস আপডেট প্রয়োজন। সাইট অ্যাডমিনকে আগের মাইগ্রেশনগুলোর পর supabase/migrations/0019_comment_media_and_editing.sql প্রয়োগ করতে বলুন।",
     // Post options, editing, several images
     postOptions: "পোস্টের বিকল্প",
+    messageOptions: "বার্তা বিকল্প",
     editPost: "পোস্ট সম্পাদনা করুন",
     edited: "সম্পাদিত",
     imagesLimit: "আপনি প্রতি পোস্টে সর্বোচ্চ {n}টি ছবি যোগ করতে পারবেন।",
@@ -5439,6 +5455,7 @@ const STRINGS = {
     errCommentSetup: "අදහස් මාධ්‍ය සහ සංස්කරණය සඳහා දත්ත සමුදා යාවත්කාලීනයක් අවශ්‍ය වේ. පෙර සංක්‍රමණ වලින් පසුව supabase/migrations/0019_comment_media_and_editing.sql යෙදීමට අඩවි පරිපාලකට කියන්න.",
     // Post options, editing, several images
     postOptions: "පළ කිරීමේ විකල්ප",
+    messageOptions: "පණිවිඩ විකල්ප",
     editPost: "පළ කිරීම සංස්කරණය කරන්න",
     edited: "සංස්කරණය කළා",
     imagesLimit: "ඔබට එක් පළ කිරීමකට රූප {n}ක් දක්වා එක් කළ හැක.",
@@ -5776,6 +5793,7 @@ const STRINGS = {
     errCommentSetup: "تبصرہ میڈیا اور ترمیم کے لیے ڈیٹا بیس اپ ڈیٹ درکار ہے۔ سائٹ منتظم سے پچھلی مائیگریشنز کے بعد supabase/migrations/0019_comment_media_and_editing.sql لاگو کرنے کے لیے کہیں۔",
     // Post options, editing, several images
     postOptions: "پوسٹ کے اختیارات",
+    messageOptions: "پیغام کے اختیارات",
     editPost: "پوسٹ میں ترمیم کریں",
     edited: "ترمیم شدہ",
     imagesLimit: "آپ فی پوسٹ زیادہ سے زیادہ {n} تصاویر شامل کر سکتے ہیں۔",
@@ -6113,6 +6131,7 @@ const STRINGS = {
     errCommentSetup: "Los medios y la edición de comentarios necesitan una actualización de la base de datos. Pide al administrador del sitio que aplique supabase/migrations/0019_comment_media_and_editing.sql después de las migraciones anteriores.",
     // Post options, editing, several images
     postOptions: "Opciones de la publicación",
+    messageOptions: "Opciones del mensaje",
     editPost: "Editar publicación",
     edited: "editado",
     imagesLimit: "Puedes añadir hasta {n} imágenes por publicación.",
@@ -6450,6 +6469,7 @@ const STRINGS = {
     errCommentSetup: "A mídia e a edição de comentários precisam de uma atualização do banco de dados. Peça ao administrador do site para aplicar supabase/migrations/0019_comment_media_and_editing.sql após as migrações anteriores.",
     // Post options, editing, several images
     postOptions: "Opções da publicação",
+    messageOptions: "Opções da mensagem",
     editPost: "Editar publicação",
     edited: "editado",
     imagesLimit: "Você pode adicionar até {n} imagens por publicação.",
@@ -6787,6 +6807,7 @@ const STRINGS = {
     errCommentSetup: "Les médias et la modification des commentaires nécessitent une mise à jour de la base de données. Demandez à l'administrateur du site d'appliquer supabase/migrations/0019_comment_media_and_editing.sql après les migrations précédentes.",
     // Post options, editing, several images
     postOptions: "Options de la publication",
+    messageOptions: "Options du message",
     editPost: "Modifier la publication",
     edited: "modifié",
     imagesLimit: "Vous pouvez ajouter jusqu'à {n} images par publication.",
@@ -7124,6 +7145,7 @@ const STRINGS = {
     errCommentSetup: "Для медиа и редактирования комментариев требуется обновление базы данных. Попросите администратора сайта применить supabase/migrations/0019_comment_media_and_editing.sql после предыдущих миграций.",
     // Post options, editing, several images
     postOptions: "Параметры публикации",
+    messageOptions: "Параметры сообщения",
     editPost: "Редактировать публикацию",
     edited: "изменено",
     imagesLimit: "Вы можете добавить до {n} изображений в публикацию.",
@@ -7461,6 +7483,7 @@ const STRINGS = {
     errCommentSetup: "تحتاج وسائط التعليقات وتحريرها إلى تحديث قاعدة البيانات. اطلب من مسؤول الموقع تطبيق supabase/migrations/0019_comment_media_and_editing.sql بعد عمليات الترحيل السابقة.",
     // Post options, editing, several images
     postOptions: "خيارات المنشور",
+    messageOptions: "خيارات الرسالة",
     editPost: "تعديل المنشور",
     edited: "تم التعديل",
     imagesLimit: "يمكنك إضافة حتى {n} صور لكل منشور.",
