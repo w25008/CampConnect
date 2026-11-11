@@ -1,6 +1,6 @@
 import {
   createChatIdentity, restoreChatIdentity, decryptBackupPrivateJwk, encryptDirectMessage,
-  decryptDirectMessage, fingerprintPublicKey, messageKeyReferences, saveLocalChatIdentity,
+  decryptDirectMessage, decodeMessageContent, fingerprintPublicKey, messageKeyReferences, saveLocalChatIdentity,
   loadLocalChatIdentity, clearLocalChatIdentity,
   savePendingRecoveryCode, loadPendingRecoveryCode, clearPendingRecoveryCode,
 } from './e2ee.js';
@@ -318,15 +318,33 @@ export async function acknowledgeRecoveryCode(userId) {
   await clearPendingRecoveryCode(userId);
 }
 
+// edited_at arrives with migration 0023. Until the team applies it, the
+// column does not exist and a select naming it fails the whole query —
+// detect that one failure and retry without the column, so conversations
+// keep loading exactly as before (messages just show no "edited" label).
+function isMissingEditedAtColumn(error) {
+  if (!error) return false;
+  return /edited_at/.test(error.message || '') &&
+    /does not exist|Could not find/i.test(error.message || '');
+}
+
+function conversationQuery(supabase, userId, recipientId, withEditedAt) {
+  return supabase.from('direct_messages')
+    .select(`id,sender_id,recipient_id,body,encryption_version,encrypted_payload,created_at,read_at${withEditedAt ? ',edited_at' : ''}`)
+    .or(`and(sender_id.eq.${userId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${userId})`)
+    .order('created_at', { ascending: false }).limit(200);
+}
+
 export async function loadEncryptedConversation(supabase, userId, recipientId, identity) {
   if (!identity?.privateKey || !identity.publicKey) throw new Error('Set up or restore your private chat key first.');
-  const [recipientKey, messageResult] = await Promise.all([
+  const [recipientKey, firstResult] = await Promise.all([
     keyRow(supabase, recipientId),
-    supabase.from('direct_messages')
-      .select('id,sender_id,recipient_id,body,encryption_version,encrypted_payload,created_at,read_at')
-      .or(`and(sender_id.eq.${userId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${userId})`)
-      .order('created_at', { ascending: false }).limit(200),
+    conversationQuery(supabase, userId, recipientId, true),
   ]);
+  let messageResult = firstResult;
+  if (messageResult.error && isMissingEditedAtColumn(messageResult.error)) {
+    messageResult = await conversationQuery(supabase, userId, recipientId, false);
+  }
   if (messageResult.error) throw messageResult.error;
   const rows = (messageResult.data || []).reverse();
   const references = rows.filter(row => row.encryption_version === 1).flatMap(row => {
@@ -344,30 +362,36 @@ export async function loadEncryptedConversation(supabase, userId, recipientId, i
   }
   const history = new Map(historicalKeys.map(row => [`${row.user_id}:${row.fingerprint}`, row.public_key]));
   const messages = await Promise.all(rows.map(async row => {
-    if (row.encryption_version === 0) return { ...row, text: row.body, legacy: true };
+    if (row.encryption_version === 0) {
+      const content = decodeMessageContent(row.body);
+      return { ...row, text: content.text, replyTo: content.replyTo, forwarded: content.forwarded, legacy: true };
+    }
     try {
       const [senderRef, recipientRef] = messageKeyReferences(row.encrypted_payload, row.sender_id, row.recipient_id);
       const viewerRef = row.sender_id === userId ? senderRef : recipientRef;
       if (viewerRef.fingerprint !== identity.fingerprint) {
-        return { ...row, text: 'Earlier message is locked because your chat key was reset.', failed: true };
+        return { ...row, text: 'Earlier message is locked because your chat key was reset.', replyTo: null, forwarded: false, failed: true };
       }
       const senderPublicKey = history.get(`${senderRef.userId}:${senderRef.fingerprint}`);
       const recipientPublicKey = history.get(`${recipientRef.userId}:${recipientRef.fingerprint}`);
       if (!senderPublicKey || !recipientPublicKey) throw new Error('A historical chat key is unavailable.');
-      const text = await decryptDirectMessage({
+      const raw = await decryptDirectMessage({
         payload: row.encrypted_payload, senderId: row.sender_id, recipientId: row.recipient_id,
         viewerId: userId, viewerPrivateKey: identity.privateKey,
         senderPublicKey, recipientPublicKey,
       });
-      return { ...row, text };
+      // v2-envelope messages carry reply/forward metadata inside the
+      // ciphertext; everything older decodes as plain text.
+      const content = decodeMessageContent(raw);
+      return { ...row, text: content.text, replyTo: content.replyTo, forwarded: content.forwarded };
     } catch (error) {
-      return { ...row, text: error.message || 'Could not decrypt this message.', failed: true };
+      return { ...row, text: error.message || 'Could not decrypt this message.', replyTo: null, forwarded: false, failed: true };
     }
   }));
   return { messages, recipientKey, recipientFingerprint: recipientKey ? await fingerprintPublicKey(recipientKey) : '' };
 }
 
-export async function sendEncryptedMessage(supabase, userId, recipientId, plaintext, identity, expectedRecipientFingerprint) {
+export async function sendEncryptedMessage(supabase, userId, recipientId, plaintext, identity, expectedRecipientFingerprint, meta = null) {
   if (!identity?.privateKey || !identity.publicKey) throw new Error('Set up or restore your private chat key first.');
   const recipientKey = await keyRow(supabase, recipientId);
   if (!recipientKey) throw new Error('This student has not enabled encrypted chat yet.');
@@ -378,10 +402,75 @@ export async function sendEncryptedMessage(supabase, userId, recipientId, plaint
     senderPrivateKey: identity.privateKey,
     senderPublicKey: identity.publicKey,
     recipientPublicKey: recipientKey,
+    meta,
   });
   const { error } = await supabase.from('direct_messages').insert({
     sender_id: userId, recipient_id: recipientId,
     encryption_version: 1, encrypted_payload: encryptedPayload,
   });
   if (error) throw error;
+}
+
+// A contact's current chat key + fingerprint, or null when they have not
+// enabled encrypted chat. Used by the forward picker, which sends to
+// students other than the open conversation's recipient.
+export async function getRecipientChatKey(supabase, recipientId) {
+  const publicKey = await keyRow(supabase, recipientId);
+  if (!publicKey) return null;
+  return { publicKey, fingerprint: await fingerprintPublicKey(publicKey) };
+}
+
+// Edit/delete run through security-definer RPCs from migration 0023:
+// direct_messages grants the browser no UPDATE or DELETE at all. Until the
+// team applies 0023 the RPCs do not exist; callers translate this marker
+// into the localized setup message.
+export class MessageActionsSetupError extends Error {
+  constructor() {
+    super('Message actions need a database update (migration 0023).');
+    this.name = 'MessageActionsSetupError';
+  }
+}
+
+function throwIfMissingMessageActions(error) {
+  if (!error) return;
+  if (error.code === 'PGRST202' || /could not find the function/i.test(error.message || '')) {
+    throw new MessageActionsSetupError();
+  }
+  throw error;
+}
+
+// Replace one of the sender's own encrypted messages with a re-encryption
+// of the new text. The original reply/forward metadata is preserved (the
+// caller passes the message's decoded content back as meta); the edited
+// marker is the server-set edited_at column, never client data. Encrypted
+// exactly like a fresh send to the same recipient, so the payload's key
+// references stay resolvable from chat_key_history.
+export async function editEncryptedMessage(supabase, userId, message, newText, identity) {
+  if (!identity?.privateKey || !identity.publicKey) throw new Error('Set up or restore your private chat key first.');
+  if (message.sender_id !== userId) throw new Error('You can only edit your own messages.');
+  if (message.encryption_version !== 1) throw new Error('Earlier messages cannot be edited.');
+  const recipientKey = await keyRow(supabase, message.recipient_id);
+  if (!recipientKey) throw new Error('This student has not enabled encrypted chat yet.');
+  const meta = (message.replyTo || message.forwarded)
+    ? { replyTo: message.replyTo || null, forwarded: Boolean(message.forwarded) }
+    : null;
+  const encryptedPayload = await encryptDirectMessage({
+    plaintext: newText, senderId: userId, recipientId: message.recipient_id,
+    senderPrivateKey: identity.privateKey,
+    senderPublicKey: identity.publicKey,
+    recipientPublicKey: recipientKey,
+    meta,
+  });
+  const { error } = await supabase.rpc('edit_direct_message', {
+    p_message_id: message.id, p_encrypted_payload: encryptedPayload,
+  });
+  throwIfMissingMessageActions(error);
+}
+
+// Delete one of the sender's own messages for everyone: the row is removed
+// server-side, so it disappears from both participants' histories on their
+// next load. Quotes of it keep rendering from their embedded snippet.
+export async function deleteEncryptedMessage(supabase, messageId) {
+  const { error } = await supabase.rpc('delete_direct_message', { p_message_id: messageId });
+  throwIfMissingMessageActions(error);
 }

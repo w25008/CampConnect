@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createChatIdentity, restoreChatIdentity, encryptDirectMessage,
   decryptDirectMessage, fingerprintPublicKey, messageKeyReferences,
-  privateKeyMatchesPublic,
+  privateKeyMatchesPublic, encodeMessageContent, decodeMessageContent,
 } from './e2ee.js';
 
 const alice = '11111111-1111-4111-8111-111111111111';
@@ -59,6 +59,47 @@ test('sender and recipient decrypt, third party and altered metadata cannot', as
   await assert.rejects(decryptDirectMessage({ ...common, recipientPublicKey: c.publicKey,
     viewerId: bob, viewerPrivateKey: b.privateKey }), /Chat key changed/);
   assert.notEqual(await fingerprintPublicKey(a.publicKey), await fingerprintPublicKey(b.publicKey));
+});
+
+test('message content envelope: plain sends stay raw, metadata round-trips', () => {
+  // No metadata: the wire form is the historical raw text, byte for byte.
+  assert.equal(encodeMessageContent('hello'), 'hello');
+  assert.deepEqual(decodeMessageContent('hello'), { text: 'hello', replyTo: null, forwarded: false });
+  // Ordinary text that merely looks like JSON is not reinterpreted.
+  const jsonish = '{"v":2,"text":"not an envelope"}';
+  assert.deepEqual(decodeMessageContent(jsonish), { text: jsonish, replyTo: null, forwarded: false });
+  assert.deepEqual(decodeMessageContent('{"cc":"dm2","v":2}'), { text: '{"cc":"dm2","v":2}', replyTo: null, forwarded: false });
+  // Reply + forwarded metadata survives an encode/decode round trip, and
+  // the snippet is capped so quotes cannot bloat the ciphertext.
+  const meta = { replyTo: { id: 'msg-1', senderId: alice, snippet: 'x'.repeat(500) }, forwarded: true };
+  const decoded = decodeMessageContent(encodeMessageContent('see this', meta));
+  assert.equal(decoded.text, 'see this');
+  assert.equal(decoded.forwarded, true);
+  assert.equal(decoded.replyTo.id, 'msg-1');
+  assert.equal(decoded.replyTo.senderId, alice);
+  assert.equal(decoded.replyTo.snippet.length, 140);
+  // A malformed reply reference is dropped, never thrown on.
+  assert.equal(decodeMessageContent('{"cc":"dm2","v":2,"text":"t","replyTo":{"id":7}}').replyTo, null);
+});
+
+test('reply and forwarded metadata stays inside the ciphertext', async () => {
+  const a = await createChatIdentity(alice);
+  const b = await createChatIdentity(bob);
+  const meta = { replyTo: { id: 'some-message-id', senderId: bob, snippet: 'earlier words' }, forwarded: false };
+  const payload = await encryptDirectMessage({
+    plaintext: 'replying to you', senderId: alice, recipientId: bob,
+    senderPrivateKey: a.privateKey, senderPublicKey: a.publicKey,
+    recipientPublicKey: b.publicKey, meta,
+  });
+  assert.equal(JSON.stringify(payload).includes('earlier words'), false);
+  const raw = await decryptDirectMessage({
+    payload, senderId: alice, recipientId: bob, viewerId: bob,
+    viewerPrivateKey: b.privateKey, senderPublicKey: a.publicKey, recipientPublicKey: b.publicKey,
+  });
+  const content = decodeMessageContent(raw);
+  assert.equal(content.text, 'replying to you');
+  assert.deepEqual(content.replyTo, { id: 'some-message-id', senderId: bob, snippet: 'earlier words' });
+  assert.equal(content.forwarded, false);
 });
 
 test('a reset preserves the other participant’s access to old ciphertext', async () => {

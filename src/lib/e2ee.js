@@ -182,11 +182,61 @@ export async function restoreChatIdentity(userId, encryptedPrivateKey, recoveryC
     { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
 }
 
+// Message content envelope (v2). Plain sends keep the historical wire form —
+// the raw text is the ciphertext plaintext — so old clients read them as
+// before. When a message carries metadata (a reply quote or a forwarded
+// marker) the plaintext becomes a small JSON object instead. The metadata
+// stays inside the ciphertext: the server never sees who quoted whom, and a
+// quote of a deleted message can still render from the embedded snippet.
+//   { cc: 'dm2', v: 2, text, forwarded?: true,
+//     replyTo?: { id, senderId, snippet } }
+const CONTENT_MARKER = 'dm2';
+const QUOTE_SNIPPET_MAX = 140;
+
+export function encodeMessageContent(text, meta = null) {
+  if (typeof text !== 'string') throw new Error('Message is empty.');
+  const replyTo = meta?.replyTo || null;
+  const forwarded = Boolean(meta?.forwarded);
+  if (!replyTo && !forwarded) return text;
+  const content = { cc: CONTENT_MARKER, v: 2, text };
+  if (forwarded) content.forwarded = true;
+  if (replyTo) {
+    if (typeof replyTo.id !== 'string' || typeof replyTo.senderId !== 'string') {
+      throw new Error('Invalid reply reference.');
+    }
+    content.replyTo = {
+      id: replyTo.id, senderId: replyTo.senderId,
+      snippet: String(replyTo.snippet || '').slice(0, QUOTE_SNIPPET_MAX),
+    };
+  }
+  return JSON.stringify(content);
+}
+
+// Inverse of encodeMessageContent. Anything that is not a well-formed v2
+// envelope — including every message sent before this existed and any
+// ordinary text that merely looks like JSON — decodes as plain text.
+export function decodeMessageContent(raw) {
+  const plain = { text: typeof raw === 'string' ? raw : '', replyTo: null, forwarded: false };
+  if (typeof raw !== 'string' || !raw.startsWith('{')) return plain;
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return plain; }
+  if (!parsed || parsed.cc !== CONTENT_MARKER || parsed.v !== 2 || typeof parsed.text !== 'string') {
+    return plain;
+  }
+  const replyTo = parsed.replyTo &&
+    typeof parsed.replyTo.id === 'string' && typeof parsed.replyTo.senderId === 'string'
+    ? { id: parsed.replyTo.id, senderId: parsed.replyTo.senderId,
+        snippet: String(parsed.replyTo.snippet || '').slice(0, QUOTE_SNIPPET_MAX) }
+    : null;
+  return { text: parsed.text, replyTo, forwarded: parsed.forwarded === true };
+}
+
 // The result belongs in direct_messages.encrypted_payload with
 // encryption_version=1 and body=NULL. Do not fall back to plaintext on error.
 export async function encryptDirectMessage({ plaintext, senderId, recipientId,
-  senderPrivateKey, senderPublicKey, recipientPublicKey }) {
+  senderPrivateKey, senderPublicKey, recipientPublicKey, meta = null }) {
   if (typeof plaintext !== 'string' || !plaintext.trim()) throw new Error('Message is empty.');
+  const wireText = encodeMessageContent(plaintext, meta);
   const senderFingerprint = await fingerprintPublicKey(senderPublicKey);
   const recipientFingerprint = await fingerprintPublicKey(recipientPublicKey);
   const context = messageContext(senderId, recipientId, senderFingerprint, recipientFingerprint);
@@ -194,7 +244,7 @@ export async function encryptDirectMessage({ plaintext, senderId, recipientId,
   const iv = randomBytes(12);
   const key = await deriveMessageKey(senderPrivateKey, recipientPublicKey, salt, context);
   const ciphertext = await webCrypto().subtle.encrypt(
-    { name: 'AES-GCM', iv, additionalData: encoder.encode(context) }, key, encoder.encode(plaintext));
+    { name: 'AES-GCM', iv, additionalData: encoder.encode(context) }, key, encoder.encode(wireText));
   return {
     version: VERSION, salt: toBase64Url(salt), iv: toBase64Url(iv),
     ciphertext: toBase64Url(new Uint8Array(ciphertext)),
