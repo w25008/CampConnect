@@ -9,7 +9,6 @@ import { checkContactKey, acceptContactKey, verifyContactKey } from './lib/conta
 import loginLogo from './login-logo.png';
 import gaigoLogo from './gaigo-logo.png';
 import itcollegeLogo from './itcollege-logo.png';
-import wizardArtwork from './wizard-opening.png';
 import { AVATAR_BUCKET, POST_IMAGE_BUCKET, isImageFile, publicUrl, shrinkImage, uploadImage, removeImages, postImagePaths } from './images.js';
 import { translate, initialLang, saveLang, LANGUAGES, localeFor } from './i18n.js';
 import { translateText } from './lib/translate.js';
@@ -2026,15 +2025,10 @@ export default function App() {
       <div className="sidebar-bottom"><div className="prefs"><LangToggle t={t} lang={lang} onChange={changeLang}/><ThemeToggle t={t} theme={theme} onToggle={toggleTheme}/></div><div className="account-row"><button type="button" className="account" onClick={() => openProfile(userId)} title={t('viewProfile')}><Avatar profile={mine}/><div><strong><Name profile={mine}/></strong><small translate="no">@{mine?.handle || '...'}</small></div></button><button className="icon-button" aria-label={t('signOut')} title={t('signOut')} onClick={async () => { const { error: err } = await supabase.auth.signOut(); if (err) setError(err.message); else { signInPasswordRef.current = ''; await clearLocalChatIdentity(userId).catch(() => {}); } }}><LogOut size={18}/></button></div></div>
     </aside>
     <main className="main-panel">
-      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? <Name profile={profileMap.get(viewProfileId) || profileView.data}/> : navTitles[tab]}</h1></div>{tab === 'feed' && !viewingOther && <div className="home-magic" role="img" aria-label="A wizard sends sparkling magic to the Gaigo and IT College logos">
+      <header className="main-header"><div><p className="eyebrow">{t('yourCommunity')}</p><h1>{viewingOther ? <Name profile={profileMap.get(viewProfileId) || profileView.data}/> : navTitles[tab]}</h1></div>{tab === 'feed' && !viewingOther && <div className="home-magic" role="img" aria-label="A paper plane carries messages between the Gaigo and IT College logos">
         <span className="home-magic-logo home-magic-logo-left"><img src={gaigoLogo} alt="Gaigo"/></span>
-        <span className="home-magic-wizard" aria-hidden="true"><span className="home-wizard"><img src={wizardArtwork} alt=""/></span><span className="home-wand">✦</span></span>
+        <span className="home-magic-path" aria-hidden="true"><span className="home-magic-ping home-magic-ping-left"/><span className="home-magic-ping home-magic-ping-right"/><span className="home-magic-plane"><span className="home-magic-plane-inner"><Send size={20}/></span></span></span>
         <span className="home-magic-logo home-magic-logo-right"><img src={itcollegeLogo} alt="IT College"/></span>
-        <span className="home-magic-star home-magic-star-left" aria-hidden="true">✦</span>
-        <span className="home-magic-star home-magic-star-right" aria-hidden="true">✦</span>
-        <span className="home-magic-star home-magic-star-left-small" aria-hidden="true">✧</span>
-        <span className="home-magic-star home-magic-star-right-small" aria-hidden="true">✧</span>
-        {Array.from({ length: 10 }, (_, index) => <span key={index} className="home-magic-star home-magic-star-extra" aria-hidden="true" style={{ '--star-x': `${12 + index * 8}%`, '--star-y': `${20 + (index * 29) % 65}%`, animationDelay: `${(index % 5) * 0.16}s` }}>✦</span>)}
       </div>}<div className="header-actions">{tab === 'groups' && <button type="button" className={`icon-button ${showCreateGroup ? 'active' : ''}`} aria-label={t('createGroup')} title={t('createGroup')} aria-expanded={showCreateGroup} onClick={() => { setShowCreateGroup(v => !v); setGroupView('list'); }}><Plus size={20}/></button>}<button className="icon-button" title={t('refresh')} aria-label={t('refresh')} onClick={() => { loadCommunity(true); loadNotifications(); setSavedRevision(value => value + 1); if (tab === 'messages') loadMessages(); if (tab === 'profile') loadProfile(viewProfileId); }}><RefreshCw size={19}/></button></div></header>
       {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError('')} aria-label={t('dismissError')}>x</button></div>}
       {notice && <div className="error-banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label={t('dismissError')}>x</button></div>}
