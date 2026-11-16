@@ -1,5 +1,7 @@
 -- Apply after 0013_group_roster.sql with the Supabase migration role.
 -- Update a post and its audience recipients atomically.
+-- edit_audience_post() is replaced in 0024 and again in 0025. Start from the
+-- latest version for any future change.
 begin;
 
 create or replace function public.mark_post_edited()
